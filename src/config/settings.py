@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     # 3d-party apps
     "rest_framework",
     # Local apps
+    "apps.catalog",
     "apps.datasets",
     "apps.search",
     "apps.users",
