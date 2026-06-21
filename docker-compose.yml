@@ -68,12 +68,13 @@ services:
       dockerfile: Dockerfile
     # TODO: Extract migration to separate service/container
     # FIXME: Create super user only for dev environment
-    command: >
-      bash -c "
-      python manage.py migrate &&
-      python manage.py createsuperuser --no-input &&
-      python manage.py runserver 0.0.0.0:8000
-      "
+    command:
+      - bash
+      - -ec
+      - |
+        python manage.py migrate
+        python manage.py createsuperuser --no-input
+        python manage.py runserver 0.0.0.0:8000
     healthcheck:
       test: ["CMD-SHELL", "python manage.py check --fail-level ERROR"]
       interval: 10s
@@ -86,8 +87,6 @@ services:
         required: true
       - path: ./.env/database.env
         required: true
-      - path: ./.env/sources.env
-        required: true
     ports:
       - "8000:8000"
     depends_on:
@@ -97,6 +96,36 @@ services:
     networks:
       # TODO: Use aliases
       - backend
+
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command:
+      - bash
+      - -ec
+      - |
+        echo "Running Django system checks..."
+        python manage.py check --fail-level ERROR
+        echo "Checking for missing migrations..."
+        python manage.py makemigrations --check --dry-run
+        echo "Running tests..."
+        python -Wa manage.py test --noinput --failfast --verbosity 2
+    environment:
+      DB_HOST: db
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+    restart: "no"
 
 networks:
   backend:
