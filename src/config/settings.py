@@ -21,7 +21,7 @@ import os
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 
-DEBUG = os.environ.get("DJANGO_DEBUG_MODE", default=0)
+DEBUG = os.environ.get("DJANGO_DEBUG_MODE", "false").strip().lower() in {"1", "true", "yes", "on", }
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1").split(",")
 

@@ -73,7 +73,6 @@ services:
       - -ec
       - |
         python manage.py migrate
-        python manage.py createsuperuser --no-input
         python manage.py runserver 0.0.0.0:8000
     healthcheck:
       test: ["CMD-SHELL", "python manage.py check --fail-level ERROR"]
