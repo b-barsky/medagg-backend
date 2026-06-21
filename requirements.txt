@@ -4,3 +4,4 @@ djangorestframework==3.16.1
 psycopg==3.2.12
 psycopg-binary==3.2.12
 sqlparse==0.5.3
+kaggle==2.2.2
