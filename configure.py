@@ -1,7 +1,8 @@
 import subprocess
 import sys
+import shutil
+from collections.abc import Sequence
 from argparse import ArgumentParser, Namespace
-from io import FileIO
 from pathlib import Path
 from typing import (Any, Callable, Dict, Iterable, List, NamedTuple, Optional,
                     TextIO, Union)
@@ -183,27 +184,30 @@ class CLI(object):
 # -----------#
 
 
-def exec(
-    *cmd,
+def run_cmd(
+    command: Sequence[str],
+    *,
     check: bool = True,
     capture_output: bool = False,
-) -> Optional[subprocess.CompletedProcess[str]]:
-    """Executes shell command"""
-    logger.info(f"executing: {' '.join(cmd)}...")
+) -> subprocess.CompletedProcess[str]:
+    logger.info(f"executing: {' '.join(command)}...")
 
     try:
-        result = subprocess.run(
-            cmd,
+        return subprocess.run(
+            command,
             check=check,
             capture_output=capture_output,
             text=True,
         )
-        return result
-    except subprocess.CalledProcessError as e:
-        logger.error(f"command failed: {' '.join(cmd)}: {e}")
-    except FileNotFoundError as e:
-        logger.error(f"command not found: {cmd[0]}: {e}")
-    return None
+    except subprocess.CalledProcessError as error:
+        logger.error(
+            f"command failed with exit code "
+            f"{error.returncode}: {' '.join(command)}"
+        )
+        raise
+    except FileNotFoundError as error:
+        logger.error(f"command not found: {command[0]}: {error}")
+        raise
 
 
 # ------------#
@@ -252,76 +256,105 @@ class Logger(object):
 # --------------#
 
 
-def docker_build_handler(clean: Optional[bool]) -> bool:
+def docker_build_handler(
+    clean: bool,
+    run_tests: bool,
+) -> bool:
     logger.openning()
 
-    logger.info("checking local database existence...")
+    compose_file = FILE_PATH.parent / "docker-compose.yml"
 
-    if DB_PATH.is_dir():
-        logger.warn("database is already present in the project")
-        if clean:
-            logger.info("removing local database...")
-            res = exec("rm", "-vrf", str(DB_PATH))
-            if not res:
-                # Return code is handled in exec function,
-                # so we only need to check result
-                logger.error("failed to remove local database")
-                return False
-
-    compose_file = FILE_PATH.parent.joinpath("docker-compose.yml")
     if not compose_file.is_file():
-        logger.warn("could not find docker compose file")
+        logger.error("could not find docker-compose.yml")
         return False
 
-    container_name = FILE_PATH.parent.name
+    project_name = FILE_PATH.parent.name
 
-    logger.info(f"bulding Docker container {container_name}...")
-
-    docker_compose = (
+    compose = (
         "docker",
         "compose",
-        "-f", str(compose_file),
-        "-p", container_name,
+        "-f",
+        str(compose_file),
+        "-p",
+        project_name,
     )
 
-    if not exec(
-        *docker_compose,
-        "up",
-        "--build",
-        "--detach",
-        "--pull", "missing",
-        "--force-recreate",
-        "--remove-orphans",
-        "--wait",
-        "--yes",
-    ):
-        logger.error("failed to run docker compose")
+    if clean and DB_PATH.exists():
+        logger.info("removing local database...")
 
-        log_file = FILE_PATH.parent.joinpath("docker-containers.log")
-
-        logger.info(f"collecting logs from {container_name}...")
-
-        logs = exec(
-            *docker_compose,
-            "logs",
-            "--no-color",
-            "--timestamps",
-            capture_output=True,
+        # Make sure that the db container is stopped
+        run_cmd(
+            (*compose, "down", "--remove-orphans"),
+            check=False,
         )
-        if logs and (len(logs.stdout) > 0 or len(logs.stderr) > 0):
-            logger.info(f"writting logs to {log_file.name}...")
-            with open(log_file, "w") as f:
-                f.writelines([logs.stdout, logs.stderr])
-        else:
-            logger.warn(f"could not collect logs from {container_name}")
 
-        logger.info(f"stopping all containers...")
+        shutil.rmtree(str(DB_PATH))
 
-        if not exec(*docker_compose, "down", check=False):
-            logger.warn(f"could not stop container {container_name}")
+    try:
+        logger.info("starting database...")
+        run_cmd(
+            (
+                *compose,
+                "up",
+                "--detach",
+                "--wait",
+                "db",
+            )
+        )
+
+        if run_tests:
+            logger.info("running backend verification...")
+            run_cmd(
+                (
+                    *compose,
+                    "--profile",
+                    "test",
+                    "run",
+                    "--rm",
+                    "--build",
+                    "--no-deps",
+                    "tests",
+                )
+            )
+
+        logger.info("starting application services...")
+        run_cmd(
+            (
+                *compose,
+                "up",
+                "--detach",
+                "--build",
+                "--wait",
+                "medagg-app",
+                "adminer",
+            )
+        )
+
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.error("configuration failed; stopping containers")
+
+        run_cmd(
+            (
+                *compose,
+                "logs",
+                "--no-color",
+                "--timestamps",
+            ),
+            check=False,
+        )
+
+        run_cmd(
+            (
+                *compose,
+                "down",
+                "--remove-orphans",
+            ),
+            check=False,
+        )
 
         return False
 
+    logger.info("configuration completed; containers are running")
     logger.closing()
     return True
 
@@ -345,6 +378,12 @@ logger = Logger()
 
 cli = CLI(
     [
+        arg(
+            "-t",
+            "--test",
+            action="store_true",
+            help="run checks and tests before starting the application",
+        ),
         arg(
             "-c",
             "--clean",
@@ -373,16 +412,21 @@ def root(args):
 
     # General setup
     logger.info("pulling project libraries...")
-    exec("git", "submodule", "update", "--init")
+    run_cmd(("git", "submodule", "update", "--init"))
 
     # Handle args/opts
     if args.docker:
-        ret = docker_build_handler(args.clean)
+        ret = docker_build_handler(
+            clean=args.clean,
+            run_tests=args.test,
+        )
     elif args.local:
         ret = local_build_handler(args.clean)
 
     if not ret:
         logger.error("failed to run configure script")
+        raise SystemExit(1)
 
 
-cli.run()
+if __name__ == "__main__":
+    cli.run()
