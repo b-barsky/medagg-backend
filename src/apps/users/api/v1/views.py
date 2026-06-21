@@ -1,4 +1,5 @@
 from rest_framework import permissions, viewsets
+from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.users.services import GroupService, UserService
@@ -8,67 +9,40 @@ from .serializers import GroupSerializer, UserSerializer
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    User API endpoint that allows users to be viewed only.
+    Staff-only user directory.
+
+    Authenticated users may retrieve their own profile through /me/.
     """
 
     serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     @property
-    def _user_service(self):
+    def _user_service(self) -> UserService:
         return UserService()
 
     def get_queryset(self):
         return self._user_service.get_all(order_by="-date_joined")
 
-    def list(self, request):
-        """
-        Get all users.
-        """
-        users = self.get_queryset()
-        serializer = self.get_serializer(users, many=True)
-        return Response(serializer.data)
-
-    def retrieve(self, request, pk=None):
-        """
-        Get a specific user.
-        """
-        if not pk:
-            return Response("Provide primary key")
-        user = self._user_service.get_one(id=pk)
-        serializer = self.get_serializer(user)
+    @action(
+        detail=False,
+        methods=["get"],
+        permission_classes=[permissions.IsAuthenticated],
+    )
+    def me(self, request):
+        serializer = self.get_serializer(request.user)
         return Response(serializer.data)
 
 
 class GroupViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    Group API endpoint that allows groups to be viewed only.
-    """
+    """Staff-only group directory."""
 
     serializer_class = GroupSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     @property
-    def _group_service(self):
+    def _group_service(self) -> GroupService:
         return GroupService()
 
     def get_queryset(self):
-        return self._group_service.get_all(order_by="-date_joined")
-
-    def list(self, request):
-        """
-        Get all groups
-        """
-        groups = self.get_queryset()
-        serializer = self.get_serializer(groups, many=True)
-        return Response(serializer.data)
-
-    def retrieve(self, request, pk=None):
-        """
-        Get a specific group
-        """
-        if not pk:
-            return Response("Provide primary key")
-        group = self._group_service.get_one(id=pk)
-        serializer = self.get_serializer(group)
-        return Response(serializer.data)
+        return self._group_service.get_all(order_by="name")

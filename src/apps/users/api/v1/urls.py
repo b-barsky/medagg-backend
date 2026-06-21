@@ -1,4 +1,3 @@
-from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from . import views
@@ -7,8 +6,8 @@ app_name = "users"
 
 router = DefaultRouter()
 
-router.register(r"", views.UserViewSet, basename="user-list")
-router.register(r"groups", views.GroupViewSet, basename="user-group-list")
+router.register(r"groups", views.GroupViewSet, basename="group")
+router.register(r"", views.UserViewSet, basename="user")
 
 """
 Add aditional urls that are not part of ViewSets.
