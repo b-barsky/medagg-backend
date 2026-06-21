@@ -1,99 +1,90 @@
-from django.db.models import Q
+from django.db.models import Q, QuerySet
 
 from apps.datasets.models import Dataset
-from libs.medsearch import search as ms
 
 
 class SearchService:
-    """
-    Search service with business logic.
-    """
+    """Dataset search business logic."""
 
-    def default_datasets(self):
-        """Retrieve the last 5 created datasets, just in case"""
-        return Dataset.objects.order_by("created_at")[:5]
-
-    @property
-    def _filter_exclude_suffixes(self):
-        """Suffixes to exclude from filtering."""
-        return "_ex"
-
-    @property
-    def _filter_single_suffixes(self):
-        """Suffixes to remove and/or replace"""
-        return {"_id": "__id", "_name": "__name", "_min": "__gte", "_max": "__lte"}
-
-    @property
-    def _filter_list_suffixes(self):
-        """
-        List suffixes to remove and/or replace.
-
-        Lists are handled separately due to the specifics of
-        working with them.
-        """
-        return {"_list": "__name__in", "_id_list": "__id__in"}
-
-    def search_datasets(self, query, filter_params):
-        """
-        Get all detailed datasets that match the given query
-        and filter them based on the given params.
-        ---
-        Parameters:
-        - query: Search term (title, description)
-        - filter_params: Parameters to filter the result set
-        """
-
-        # TODO: Not yet implemented
-        search_result = ms.search(query, k=5)
-        print(f"Search result from medagg-search lib: {search_result}")
-
-        # Search by title and description
-        result_set = Dataset.objects.filter(
-            Q(title__icontains=query) | Q(description__icontains=query)
+    @staticmethod
+    def _detailed_queryset() -> QuerySet[Dataset]:
+        return (
+            Dataset.objects
+            .select_related("anatomical_area")
+            .prefetch_related("modalities", "ml_tasks", "tags")
         )
 
-        # Build proper filters
-        filters = {}
-        order = ""  # Store the correct argument for quering
-        distinct = False
-        for name, value in filter_params.items():
-            # Ignore empty params
-            if not value:
-                continue
+    def default_datasets(self) -> QuerySet[Dataset]:
+        """Retrieve the five newest datasets."""
 
-            # Exclude specified params
-            if name.endswith(self._filter_exclude_suffixes):
-                continue
+        # FIXME: Magic number
+        return self._detailed_queryset().order_by(
+            "-created_at",
+            "-id",
+        )[:5]
 
-            # There should be always some ordering
-            if name.startswith("order"):
-                order = "-" + value[0] if value[1] == "desc" else value[0]
-                continue
+    def search_datasets(
+        self,
+        query: str,
+        filter_params: dict,
+    ) -> QuerySet[Dataset]:
+        result_set = self._detailed_queryset().filter(
+            Q(title__icontains=query)
+            | Q(description__icontains=query)
+        )
 
-            # Extract filters with multiple values
-            for k, v in self._filter_list_suffixes.items():
-                if name.endswith(k):
-                    filters[name.replace(k, v)] = value.split(",")
-                    distinct = True
-                    break
-            if distinct:
-                continue
+        anatomical_area_name = filter_params.get(
+            "anatomical_area_name"
+        )
+        if anatomical_area_name:
+            result_set = result_set.filter(
+                anatomical_area__name__iexact=anatomical_area_name
+            )
 
-            # Extract filters with special aggregation
-            for k, v in self._filter_single_suffixes.items():
-                if name.endswith(k):
-                    filters[name.replace(k, v)] = value
-                    break
-            else:
-                # Extract every other filter
-                filters[name] = value
+        record_count_min = filter_params.get("record_count_min")
+        if record_count_min is not None:
+            result_set = result_set.filter(
+                record_count__gte=record_count_min
+            )
 
-        # Now, apply aggragation if any is present
-        if filters:
-            result_set = result_set.filter(**filters)
-        if order:
-            result_set.order_by(order)
-        if distinct:
-            result_set.distinct()
+        record_count_max = filter_params.get("record_count_max")
+        if record_count_max is not None:
+            result_set = result_set.filter(
+                record_count__lte=record_count_max
+            )
 
-        return result_set
+        size_min = filter_params.get("size_min")
+        if size_min is not None:
+            result_set = result_set.filter(size__gte=size_min)
+
+        size_max = filter_params.get("size_max")
+        if size_max is not None:
+            result_set = result_set.filter(size__lte=size_max)
+
+        modalities = filter_params.get("modalities_list")
+        if modalities:
+            result_set = result_set.filter(
+                modalities__name__in=modalities
+            )
+
+        ml_tasks = filter_params.get("ml_tasks_list")
+        if ml_tasks:
+            result_set = result_set.filter(
+                ml_tasks__name__in=ml_tasks
+            )
+
+        tags = filter_params.get("tags_list")
+        if tags:
+            result_set = result_set.filter(
+                tags__name__in=tags
+            )
+
+        ordering = filter_params.get(
+            "ordering",
+            "-created_at",
+        )
+
+        return result_set.distinct().order_by(
+            ordering,
+            "-id",
+        )

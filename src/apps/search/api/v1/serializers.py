@@ -1,86 +1,120 @@
 from rest_framework import serializers
 
-from apps.datasets.api.v1.serializers import DatasetDetailedSerializer
+
+ORDERING_CHOICES = (
+    "created_at",
+    "-created_at",
+    "title",
+    "-title",
+    "record_count",
+    "-record_count",
+    "size",
+    "-size",
+)
 
 
-class StringListField(serializers.ListField):
-    child = serializers.CharField()
+class CommaSeparatedListField(serializers.ListField):
+    """
+    Accepts either:
+
+    ?tags_list=cancer,smoking
+
+    or a normal Python/JSON list when used outside query parameters.
+    """
+
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            data = [
+                item.strip()
+                for item in data.split(",")
+                if item.strip()
+            ]
+
+        return super().to_internal_value(data)
 
 
 class SearchDatasetsGetSerializer(serializers.Serializer):
-    """
-    All possible filter parameters for the datasets.
-    ---
-    Make sure to name parameters using the following format:
-        <name>_<suffix>
-    , where `<name>` is the exact match for the column name in a model
-    and `<suffix>` is the special identifier for proper filtering.
-
-    See `app.search.services.search()` for more info.
-
-    Note: Also, `<name>` itself can contain undescores.
-    """
-
-    # Filter by anatomical area name
     anatomical_area_name = serializers.CharField(
-        required=False, allow_blank=True, min_length=2
-    )
-    # Minimum record count
-    record_count_min = serializers.IntegerField(required=False, allow_null=True)
-    # Maximum record count
-    record_count_max = serializers.IntegerField(required=False, allow_null=True)
-    # Filter by modalities (comma-separated)
-    modalities_list = serializers.CharField(required=False, allow_blank=True)
-    # Filter by ML tasks (comma-separated)
-    ml_tasks_list = serializers.CharField(required=False, allow_blank=True)
-    # Filter by tags (comma-separated)
-    tags_list = serializers.CharField(required=False, allow_blank=True)
-    # Minimum dataset size (MB)
-    size_min = serializers.IntegerField(required=False, allow_null=True)
-    # Maximum dataset size (MB)
-    size_max = serializers.IntegerField(required=False, allow_null=True)
-    # Order of resulting datasets
-    ordering = serializers.ListField(
-        max_length=2,
-        default=[
-            "created_at",  # Column name to order by
-            "desc",  # The exact order (descending)
-        ],
+        required=False,
+        allow_blank=False,
+        min_length=2,
     )
 
-    class Meta:
-        fields = [
-            "anatomical_area_name",
-            "record_count_min",
-            "record_count_max",
-            "modalities_list",
-            "ml_tasks_list",
-            "tags_list",
-            "size_min",
-            "size_max",
-            "ordering",
-        ]
+    record_count_min = serializers.IntegerField(
+        required=False,
+        min_value=0,
+    )
+    record_count_max = serializers.IntegerField(
+        required=False,
+        min_value=0,
+    )
+
+    modalities_list = CommaSeparatedListField(
+        child=serializers.CharField(min_length=1),
+        required=False,
+        allow_empty=False,
+    )
+    ml_tasks_list = CommaSeparatedListField(
+        child=serializers.CharField(min_length=1),
+        required=False,
+        allow_empty=False,
+    )
+    tags_list = CommaSeparatedListField(
+        child=serializers.CharField(min_length=1),
+        required=False,
+        allow_empty=False,
+    )
+
+    size_min = serializers.IntegerField(
+        required=False,
+        min_value=0,
+    )
+    size_max = serializers.IntegerField(
+        required=False,
+        min_value=0,
+    )
+
+    ordering = serializers.ChoiceField(
+        choices=ORDERING_CHOICES,
+        default="-created_at",
+    )
+
+    def validate(self, attrs):
+        errors = {}
+
+        range_fields = (
+            ("record_count_min", "record_count_max"),
+            ("size_min", "size_max"),
+        )
+
+        for minimum_field, maximum_field in range_fields:
+            minimum = attrs.get(minimum_field)
+            maximum = attrs.get(maximum_field)
+
+            if (
+                minimum is not None
+                and maximum is not None
+                and minimum > maximum
+            ):
+                errors[maximum_field] = (
+                    f"Must be greater than or equal to {minimum_field}."
+                )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return attrs
 
 
 class SearchDatasetsPostSerializer(serializers.Serializer):
-    # TODO: Extract length values to constants
     query = serializers.CharField(
         max_length=100,
         min_length=2,
-        allow_blank=False,  # TODO: Consider allow_blank=True
+        allow_blank=False,
+        trim_whitespace=True,
     )
-
-    class Meta:
-        fields = ["query"]
 
 
 class SearchDatasetsRequestSerializer(serializers.Serializer):
-    # GET query params
     get = SearchDatasetsGetSerializer()
-    # POST data
     post = SearchDatasetsPostSerializer()
-
-
-class SearchResponseSerializer(serializers.Serializer):
-    count = serializers.IntegerField()
-    results = DatasetDetailedSerializer(many=True)

@@ -1,75 +1,65 @@
-from rest_framework import generics, mixins, status, viewsets
-from rest_framework.decorators import action
+from rest_framework import viewsets
 from rest_framework.response import Response
 
+from apps.datasets.api.v1.serializers import (
+    DatasetDetailedSerializer,
+)
 from apps.search.services import SearchService
 
-from .serializers import (SearchDatasetsGetSerializer,
-                          SearchDatasetsPostSerializer,
-                          SearchDatasetsRequestSerializer,
-                          SearchResponseSerializer)
+from .serializers import (
+    SearchDatasetsPostSerializer,
+    SearchDatasetsRequestSerializer,
+)
 
 
-class BaseSearchViewSet(
-    mixins.CreateModelMixin,
-    viewsets.GenericViewSet,
-):
-    """
-    A viewset that provides `create` only action.
+class BaseSearchViewSet(viewsets.GenericViewSet):
+    """A ViewSet exposing POST create as a search operation."""
 
-    To use it:
-    1. Override the class and set the `.queryset` and `.serializer_class` attributes.
-    2. Override `.search()` method and handle search request with POST `.data`.
-    """
+    def create(self, request, *args, **kwargs):
+        return self.search(request=request)
 
     def search(self, request):
-        return self.get_queryset()
-
-    def create(self, request):
-        return self.search(request=request)
+        raise NotImplementedError
 
 
 class SearchDatasetsViewSet(BaseSearchViewSet):
-    """
-    Search API endpoint that allows datasets to be searched with query.
-    """
+    serializer_class = SearchDatasetsPostSerializer
 
     @property
-    def _search_service(self):
+    def _search_service(self) -> SearchService:
         return SearchService()
-
-    def get_serializer_class(self):
-        return SearchDatasetsPostSerializer
 
     def get_queryset(self):
         return self._search_service.default_datasets()
 
     def search(self, request):
-        """Get filtered datasets"""
-
-        # POST data is already initialized, so we need to
-        # combine it with GET query params and check if it's valid.
-        req_serializer = SearchDatasetsRequestSerializer(
-            # TODO: Extract this to some middleware where the request is serialized by ViewSet
-            data={"get": request.query_params, "post": request.data}
+        request_serializer = SearchDatasetsRequestSerializer(
+            data={
+                "get": request.query_params.dict(),
+                "post": request.data,
+            }
         )
-        if not req_serializer.is_valid():
-            return Response(req_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        request_serializer.is_valid(raise_exception=True)
 
-        # Search for datasets using the given query
+        validated_data = request_serializer.validated_data
+
         result_set = self._search_service.search_datasets(
-            query=req_serializer.data["post"]["query"],
-            filter_params=req_serializer.data["get"],
+            query=validated_data["post"]["query"],
+            filter_params=validated_data["get"],
         )
 
-        # Serialize the response
-        res_serializer = SearchResponseSerializer(
-            {"count": result_set.count(), "results": result_set}
-        )
-        return Response(res_serializer.data)
+        page = self.paginate_queryset(result_set)
+        objects = page if page is not None else result_set
 
-    @action(detail=False, methods=["get"])
-    def filters(self, request):
-        """Get available filter options"""
-        # TODO: Extract filters from SearchDatasetsFilterParamsSerializer
-        pass
+        response_serializer = DatasetDetailedSerializer(
+            objects,
+            many=True,
+            context=self.get_serializer_context(),
+        )
+
+        if page is not None:
+            return self.get_paginated_response(
+                response_serializer.data
+            )
+
+        return Response(response_serializer.data)
