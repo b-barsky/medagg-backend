@@ -1,120 +1,227 @@
 from rest_framework import serializers
 
-
-ORDERING_CHOICES = (
-    "created_at",
-    "-created_at",
-    "title",
-    "-title",
-    "record_count",
-    "-record_count",
-    "size",
-    "-size",
+from apps.catalog.models import SourceDataset
+from apps.search.models import (
+    SearchProviderRun,
+    SearchResult,
+    SearchRun,
 )
 
 
-class CommaSeparatedListField(serializers.ListField):
-    """
-    Accepts either:
-
-    ?tags_list=cancer,smoking
-
-    or a normal Python/JSON list when used outside query parameters.
-    """
-
-    def to_internal_value(self, data):
-        if isinstance(data, str):
-            data = [
-                item.strip()
-                for item in data.split(",")
-                if item.strip()
-            ]
-
-        return super().to_internal_value(data)
-
-
-class SearchDatasetsGetSerializer(serializers.Serializer):
-    anatomical_area_name = serializers.CharField(
-        required=False,
-        allow_blank=False,
-        min_length=2,
-    )
-
-    record_count_min = serializers.IntegerField(
-        required=False,
-        min_value=0,
-    )
-    record_count_max = serializers.IntegerField(
-        required=False,
-        min_value=0,
-    )
-
-    modalities_list = CommaSeparatedListField(
-        child=serializers.CharField(min_length=1),
-        required=False,
-        allow_empty=False,
-    )
-    ml_tasks_list = CommaSeparatedListField(
-        child=serializers.CharField(min_length=1),
-        required=False,
-        allow_empty=False,
-    )
-    tags_list = CommaSeparatedListField(
-        child=serializers.CharField(min_length=1),
-        required=False,
-        allow_empty=False,
-    )
-
-    size_min = serializers.IntegerField(
-        required=False,
-        min_value=0,
-    )
-    size_max = serializers.IntegerField(
-        required=False,
-        min_value=0,
-    )
-
-    ordering = serializers.ChoiceField(
-        choices=ORDERING_CHOICES,
-        default="-created_at",
-    )
-
-    def validate(self, attrs):
-        errors = {}
-
-        range_fields = (
-            ("record_count_min", "record_count_max"),
-            ("size_min", "size_max"),
-        )
-
-        for minimum_field, maximum_field in range_fields:
-            minimum = attrs.get(minimum_field)
-            maximum = attrs.get(maximum_field)
-
-            if (
-                minimum is not None
-                and maximum is not None
-                and minimum > maximum
-            ):
-                errors[maximum_field] = (
-                    f"Must be greater than or equal to {minimum_field}."
-                )
-
-        if errors:
-            raise serializers.ValidationError(errors)
-
-        return attrs
-
-
-class SearchDatasetsPostSerializer(serializers.Serializer):
+class SearchRunCreateSerializer(serializers.Serializer):
     query = serializers.CharField(
         max_length=100,
         min_length=2,
         allow_blank=False,
         trim_whitespace=True,
     )
+    sources = serializers.ListField(
+        child=serializers.SlugField(
+            max_length=50,
+        ),
+        required=False,
+        allow_empty=False,
+    )
+    provider_page = serializers.IntegerField(
+        required=False,
+        default=1,
+        min_value=1,
+        max_value=100,
+    )
+
+    def validate_sources(
+        self,
+        value: list[str],
+    ) -> list[str]:
+        return list(
+            dict.fromkeys(
+                source.strip().lower()
+                for source in value
+            )
+        )
 
 
-class SearchDatasetsRequestSerializer(serializers.Serializer):
-    get = SearchDatasetsGetSerializer()
-    post = SearchDatasetsPostSerializer()
+class SearchProviderRunSerializer(
+    serializers.ModelSerializer
+):
+    source = serializers.SerializerMethodField()
+    error = serializers.SerializerMethodField()
+    detail_pending_count = serializers.IntegerField(
+        read_only=True,
+    )
+
+    class Meta:
+        model = SearchProviderRun
+        fields = (
+            "id",
+            "source",
+            "position",
+            "provider_page",
+            "status",
+            "attempt_count",
+            "result_count",
+            "detail_completed_count",
+            "detail_failed_count",
+            "detail_pending_count",
+            "error",
+            "started_at",
+            "last_attempt_at",
+            "finished_at",
+        )
+        read_only_fields = fields
+
+    @staticmethod
+    def get_source(
+        instance: SearchProviderRun,
+    ) -> dict[str, str]:
+        return {
+            "slug": instance.source.slug,
+            "name": instance.source.name,
+        }
+
+    @staticmethod
+    def get_error(
+        instance: SearchProviderRun,
+    ) -> dict[str, str] | None:
+        if not instance.error_code and not instance.error_message:
+            return None
+
+        return {
+            "code": instance.error_code,
+            "message": instance.error_message,
+        }
+
+
+class SearchRunSerializer(serializers.ModelSerializer):
+    providers = SearchProviderRunSerializer(
+        source="provider_runs",
+        many=True,
+        read_only=True,
+    )
+    is_terminal = serializers.BooleanField(
+        read_only=True,
+    )
+
+    class Meta:
+        model = SearchRun
+        fields = (
+            "id",
+            "query",
+            "status",
+            "is_terminal",
+            "providers",
+            "deadline_at",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+
+class SourceDatasetSummarySerializer(
+    serializers.ModelSerializer
+):
+    source = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SourceDataset
+        fields = (
+            "id",
+            "source",
+            "external_id",
+            "source_url",
+            "title",
+            "subtitle",
+            "description",
+            "owner_name",
+            "owner_ref",
+            "license_name",
+            "license_names",
+            "total_bytes",
+            "download_count",
+            "vote_count",
+            "view_count",
+            "usability_rating",
+            "remote_version",
+            "remote_updated_at",
+            "thumbnail_url",
+            "detail_status",
+            "detail_fetched_at",
+            "detail_error",
+            "last_seen_at",
+        )
+        read_only_fields = fields
+
+    @staticmethod
+    def get_source(
+        instance: SourceDataset,
+    ) -> dict[str, str]:
+        return {
+            "slug": instance.source.slug,
+            "name": instance.source.name,
+        }
+
+    @staticmethod
+    def get_description(
+        instance: SourceDataset,
+    ) -> str:
+        return instance.description or instance.subtitle
+
+
+class SourceDatasetSearchResultSerializer(
+    serializers.Serializer
+):
+    """Flatten SearchResult state into the existing dataset response shape."""
+
+    def to_representation(
+        self,
+        instance: SearchResult,
+    ) -> dict[str, object]:
+        payload = dict(
+            SourceDatasetSummarySerializer(
+                instance.source_dataset,
+                context=self.context,
+            ).data
+        )
+        payload.update(
+            {
+                "search_result_id": instance.pk,
+                "rank": instance.rank,
+                "enrichment_status": (
+                    instance.enrichment_status
+                ),
+                "enrichment_attempt_count": (
+                    instance.enrichment_attempt_count
+                ),
+                "enrichment_error": self._enrichment_error(
+                    instance
+                ),
+                "enrichment_started_at": (
+                    instance.enrichment_started_at
+                ),
+                "enrichment_last_attempt_at": (
+                    instance.enrichment_last_attempt_at
+                ),
+                "enrichment_finished_at": (
+                    instance.enrichment_finished_at
+                ),
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _enrichment_error(
+        instance: SearchResult,
+    ) -> dict[str, str] | None:
+        if (
+            not instance.enrichment_error_code
+            and not instance.enrichment_error_message
+        ):
+            return None
+
+        return {
+            "code": instance.enrichment_error_code,
+            "message": instance.enrichment_error_message,
+        }

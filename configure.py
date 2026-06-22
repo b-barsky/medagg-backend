@@ -299,6 +299,31 @@ def docker_build_handler(
                 "--detach",
                 "--wait",
                 "db",
+                "redis"
+            )
+        )
+
+        logger.info("running backend migrations...")
+        run_cmd(
+            (
+                *compose,
+                "run",
+                "--rm",
+                "--build",
+                "--no-deps",
+                "migrate",
+            )
+        )
+
+        logger.info("starting celery workers...")
+        run_cmd(
+            (
+                *compose,
+                "up",
+                "--detach",
+                "--build",
+                "--wait",
+                "celery-worker",
             )
         )
 

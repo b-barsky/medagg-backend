@@ -1,25 +1,15 @@
-from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from . import views
 
+
 app_name = "search"
 
 router = DefaultRouter()
+router.register(
+    r"datasets",
+    views.SearchDatasetsViewSet,
+    basename="search-datasets",
+)
 
-router.register(r"datasets", views.SearchDatasetsViewSet, basename="search-datasets")
-
-"""
-Add aditional urls that are not part of ViewSets.
-Note: Remember that every added bewlow will be part
-of 'search/' url-prefix.
-
-For example:
-urlpatterns = [
-    path("foo", views.BarBazView.as_view(), name="foo-bar"),
-]
-"""
-urlpatterns = []
-
-# Combine ViewSet's urls with others
-urlpatterns += router.urls
+urlpatterns = router.urls

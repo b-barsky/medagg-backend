@@ -36,7 +36,7 @@ services:
       start_period: 30s
       timeout: 10s
     ports:
-      - 5432:5432 # Port forwarding
+      - "5432:5432" # Port forwarding
     deploy:
       resources:
         limits:
@@ -45,6 +45,29 @@ services:
       placement:
         constraints:
           - node.role == manager
+
+  redis:
+    image: redis:8.8.0-alpine
+    restart: always
+    # TODO: Change it
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis-data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   adminer: # Simple db web-manager
     image: adminer:5.4.1-standalone
@@ -56,24 +79,91 @@ services:
     networks:
       - db
     ports:
-      - 8080:8080
+      - "8080:8080"
 
-  ##############
-  # DJango app #
-  ##############
+  #######################
+  # DJango + Celery app #
+  #######################
+  migrate:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command:
+      - python
+      - manage.py
+      - migrate
+      - --noinput
+    environment:
+      DB_HOST: db
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+    depends_on:
+      db:
+        condition: service_healthy
+        restart: true
+    networks:
+      - backend
+    restart: "no"
+
+  celery-worker:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command:
+      - bash
+      - -ec
+      - |
+        summary_queue="$${SEARCH_TASK_QUEUE:-catalog-search}"
+        detail_queue="$${SEARCH_DETAIL_TASK_QUEUE:-catalog-detail}"
+        exec celery -A config worker \
+          --loglevel=INFO \
+          --concurrency="$${CELERY_WORKER_CONCURRENCY:-2}" \
+          --max-tasks-per-child=100 \
+          --hostname="celery@%h" \
+          --include=apps.search.tasks \
+          --queues="$$summary_queue,$$detail_queue"
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+      - path: ./.env/sources.env
+        required: false
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+        restart: true
+    networks:
+      - backend
+    restart: unless-stopped
+    stop_grace_period: 75s
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout=5 | grep -q pong"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
   medagg-app:
     build:
       context: .
       target: prod
       dockerfile: Dockerfile
-    # TODO: Extract migration to separate service/container
-    # FIXME: Create super user only for dev environment
     command:
-      - bash
-      - -ec
-      - |
-        python manage.py migrate
-        python manage.py runserver 0.0.0.0:8000
+      - python
+      - manage.py
+      - runserver
+      - 0.0.0.0:8000
     healthcheck:
       test: ["CMD-SHELL", "python manage.py check --fail-level ERROR"]
       interval: 10s
@@ -81,6 +171,7 @@ services:
       retries: 5
     environment:
       DB_HOST: db # Network inside compose
+      CELERY_BROKER_URL: redis://redis:6379/0
     env_file:
       - path: ./.env/settings.env
         required: true
@@ -91,9 +182,18 @@ services:
     ports:
       - "8000:8000"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+        restart: true
+      celery-worker:
+        condition: service_healthy
+        restart: true
       db:
         condition: service_healthy
         restart: true
+    restart: unless-stopped
     networks:
       # TODO: Use aliases
       - backend
@@ -116,6 +216,7 @@ services:
         python -Wa manage.py test --noinput --failfast --verbosity 2
     environment:
       DB_HOST: db
+      CELERY_BROKER_URL: memory://
     env_file:
       - path: ./.env/settings.env
         required: true
@@ -127,6 +228,9 @@ services:
     networks:
       - backend
     restart: "no"
+
+volumes:
+  redis-data:
 
 networks:
   backend:
