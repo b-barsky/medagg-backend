@@ -1,7 +1,7 @@
 services:
-  ####################
-  # Database + Cache #
-  ####################
+  #####################
+  # Database + Broker #
+  #####################
   db: # Core database of our app
     image: postgres:17.6-alpine3.22 # Always use fixed version
     restart: always
@@ -69,6 +69,35 @@ services:
       retries: 10
       start_period: 5s
 
+  minio:
+    build:
+      context: ./infra/minio
+      dockerfile: Dockerfile
+      args:
+        MINIO_VERSION: RELEASE.2025-10-15T17-29-55Z
+    restart: unless-stopped
+    command:
+      - server
+      - /data
+      - --console-address
+      - :9001
+    env_file:
+      - path: ./.env/storage.env
+        required: true
+    volumes:
+      - minio-data:/data
+    networks:
+      - backend
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   adminer: # Simple db web-manager
     image: adminer:5.4.1-standalone
     restart: always
@@ -101,8 +130,38 @@ services:
         required: true
       - path: ./.env/database.env
         required: true
+      - path: ./.env/storage.env
+        required: false
     depends_on:
       db:
+        condition: service_healthy
+        restart: true
+    networks:
+      - backend
+    restart: "no"
+
+  object-storage-init:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command:
+      - python
+      - manage.py
+      - ensure_object_storage
+    environment:
+      DB_HOST: db
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+      - path: ./.env/storage.env
+        required: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
         condition: service_healthy
         restart: true
     networks:
@@ -124,7 +183,7 @@ services:
           --loglevel=INFO \
           --concurrency="$${CELERY_WORKER_CONCURRENCY:-2}" \
           --max-tasks-per-child=100 \
-          --hostname="celery@%h" \
+          --hostname="catalog@%h" \
           --include=apps.search.tasks \
           --queues="$$summary_queue,$$detail_queue"
     environment:
@@ -137,6 +196,8 @@ services:
         required: true
       - path: ./.env/sources.env
         required: false
+      - path: ./.env/storage.env
+        required: true
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -148,7 +209,53 @@ services:
     restart: unless-stopped
     stop_grace_period: 75s
     healthcheck:
-      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout=5 | grep -q pong"]
+      test: ["CMD-SHELL", "celery -A config inspect ping -d catalog@$$HOSTNAME --timeout=5 | grep -q pong"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  celery-import-worker:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command:
+      - bash
+      - -ec
+      - |
+        import_queue="$${DATASET_IMPORT_QUEUE:-dataset-import}"
+        exec celery -A config worker \
+          --loglevel=INFO \
+          --concurrency="$${DATASET_IMPORT_WORKER_CONCURRENCY:-1}" \
+          --max-tasks-per-child=20 \
+          --hostname="dataset-import@%h" \
+          --include=apps.datasets.tasks \
+          --queues="$$import_queue"
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+      - path: ./.env/sources.env
+        required: false
+      - path: ./.env/storage.env
+        required: true
+    depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+        restart: true
+    networks:
+      - backend
+    restart: unless-stopped
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d dataset-import@$$HOSTNAME --timeout=5 | grep -q pong"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -169,6 +276,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     environment:
       DB_HOST: db # Network inside compose
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -179,15 +287,22 @@ services:
         required: true
       - path: ./.env/sources.env
         required: false
+      - path: ./.env/storage.env
+        required: true
     ports:
       - "8000:8000"
     depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
         restart: true
       celery-worker:
+        condition: service_healthy
+        restart: true
+      celery-import-worker:
         condition: service_healthy
         restart: true
       db:
@@ -222,6 +337,8 @@ services:
         required: true
       - path: ./.env/database.env
         required: true
+      - path: ./.env/storage.env
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -231,6 +348,7 @@ services:
 
 volumes:
   redis-data:
+  minio-data:
 
 networks:
   backend:

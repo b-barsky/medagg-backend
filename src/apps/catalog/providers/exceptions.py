@@ -20,3 +20,7 @@ class ProviderResponseError(ProviderError):
 
 class ProviderNotRegisteredError(ProviderConfigurationError):
     """No adapter is registered for a requested source."""
+
+
+class ProviderDownloadUnsupportedError(ProviderConfigurationError):
+    """The provider adapter cannot download dataset artifacts."""

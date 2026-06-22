@@ -61,17 +61,49 @@ def _env_float(
     return value
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+
+    if raw_value is None:
+        return default
+
+    normalized = raw_value.strip().lower()
+
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    raise ValueError(
+        f"Environment variable {name} must be a boolean."
+    )
+
+
+def _env_csv(name: str, default: str) -> tuple[str, ...]:
+    return tuple(
+        value.strip().lower()
+        for value in os.environ.get(name, default).split(",")
+        if value.strip()
+    )
+
+
+def _env_optional_url(
+    name: str,
+    default: str | None,
+) -> str | None:
+    raw_value = os.environ.get(name)
+
+    if raw_value is None:
+        raw_value = default or ""
+
+    normalized = raw_value.strip().rstrip("/")
+    return normalized or None
+
+
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 
-DEBUG = os.environ.get(
-    "DJANGO_DEBUG_MODE",
-    "false",
-).strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+DEBUG = _env_bool("DJANGO_DEBUG_MODE", False)
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -228,7 +260,7 @@ CELERY_TASK_PUBLISH_RETRY_POLICY = {
 }
 CELERY_VISIBILITY_TIMEOUT = _env_int(
     "CELERY_VISIBILITY_TIMEOUT_SECONDS",
-    300,
+    3600,
     minimum=1,
 )
 CELERY_BROKER_TRANSPORT_OPTIONS = {
@@ -256,12 +288,19 @@ SEARCH_DETAIL_TASK_QUEUE = os.environ.get(
     "SEARCH_DETAIL_TASK_QUEUE",
     "catalog-detail",
 ).strip()
+DATASET_IMPORT_TASK_QUEUE = os.environ.get(
+    "DATASET_IMPORT_QUEUE",
+    "dataset-import",
+).strip()
 
 if not SEARCH_TASK_QUEUE:
     raise ValueError("SEARCH_TASK_QUEUE cannot be blank.")
 
 if not SEARCH_DETAIL_TASK_QUEUE:
     raise ValueError("SEARCH_DETAIL_TASK_QUEUE cannot be blank.")
+
+if not DATASET_IMPORT_TASK_QUEUE:
+    raise ValueError("DATASET_IMPORT_QUEUE cannot be blank.")
 
 CELERY_TASK_DEFAULT_QUEUE = SEARCH_TASK_QUEUE
 CELERY_TASK_ROUTES = {
@@ -273,6 +312,9 @@ CELERY_TASK_ROUTES = {
     },
     "search.run.expire": {
         "queue": SEARCH_TASK_QUEUE,
+    },
+    "datasets.import": {
+        "queue": DATASET_IMPORT_TASK_QUEUE,
     },
 }
 
@@ -386,6 +428,146 @@ if (
         "SEARCH_DETAIL_SOFT_TIME_LIMIT_SECONDS."
     )
 
+# ---------------------------------------------------------------------------
+# Object storage and durable artifact ingestion
+# ---------------------------------------------------------------------------
+
+OBJECT_STORAGE_ACCESS_KEY = os.environ.get(
+    "OBJECT_STORAGE_ACCESS_KEY",
+    "medagg",
+)
+OBJECT_STORAGE_SECRET_KEY = os.environ.get(
+    "OBJECT_STORAGE_SECRET_KEY",
+    "medagg-development-only",
+)
+OBJECT_STORAGE_BUCKET = os.environ.get(
+    "OBJECT_STORAGE_BUCKET",
+    "medagg-datasets",
+).strip()
+OBJECT_STORAGE_REGION = os.environ.get(
+    "OBJECT_STORAGE_REGION",
+    "us-east-1",
+).strip()
+OBJECT_STORAGE_ENDPOINT_URL = _env_optional_url(
+    "OBJECT_STORAGE_ENDPOINT_URL",
+    "http://minio:9000",
+)
+OBJECT_STORAGE_PUBLIC_ENDPOINT_URL = _env_optional_url(
+    "OBJECT_STORAGE_PUBLIC_ENDPOINT_URL",
+    "http://127.0.0.1:9000",
+)
+OBJECT_STORAGE_ADDRESSING_STYLE = os.environ.get(
+    "OBJECT_STORAGE_ADDRESSING_STYLE",
+    "path",
+).strip().lower()
+OBJECT_STORAGE_PRESIGN_EXPIRY_SECONDS = _env_int(
+    "OBJECT_STORAGE_PRESIGN_EXPIRY_SECONDS",
+    900,
+    minimum=60,
+)
+OBJECT_STORAGE_CONNECT_TIMEOUT_SECONDS = _env_float(
+    "OBJECT_STORAGE_CONNECT_TIMEOUT_SECONDS",
+    5.0,
+    minimum=0.1,
+)
+OBJECT_STORAGE_READ_TIMEOUT_SECONDS = _env_float(
+    "OBJECT_STORAGE_READ_TIMEOUT_SECONDS",
+    120.0,
+    minimum=1.0,
+)
+OBJECT_STORAGE_MAX_ATTEMPTS = _env_int(
+    "OBJECT_STORAGE_MAX_ATTEMPTS",
+    4,
+    minimum=1,
+)
+
+if not OBJECT_STORAGE_BUCKET:
+    raise ValueError("OBJECT_STORAGE_BUCKET cannot be blank.")
+
+if OBJECT_STORAGE_ADDRESSING_STYLE not in {"auto", "path", "virtual"}:
+    raise ValueError(
+        "OBJECT_STORAGE_ADDRESSING_STYLE must be auto, path, or virtual."
+    )
+
+DATASET_IMPORT_MAX_BYTES = _env_int(
+    "DATASET_IMPORT_MAX_BYTES",
+    20 * 1024 * 1024 * 1024,
+    minimum=1,
+)
+DATASET_IMPORT_SOFT_TIME_LIMIT_SECONDS = _env_int(
+    "DATASET_IMPORT_SOFT_TIME_LIMIT_SECONDS",
+    1800,
+    minimum=1,
+)
+DATASET_IMPORT_HARD_TIME_LIMIT_SECONDS = _env_int(
+    "DATASET_IMPORT_HARD_TIME_LIMIT_SECONDS",
+    1860,
+    minimum=2,
+)
+DATASET_IMPORT_MAX_RETRIES = _env_int(
+    "DATASET_IMPORT_MAX_RETRIES",
+    2,
+    minimum=0,
+)
+DATASET_IMPORT_RETRY_BACKOFF_SECONDS = _env_int(
+    "DATASET_IMPORT_RETRY_BACKOFF_SECONDS",
+    30,
+    minimum=1,
+)
+DATASET_IMPORT_RETRY_BACKOFF_MAX_SECONDS = _env_int(
+    "DATASET_IMPORT_RETRY_BACKOFF_MAX_SECONDS",
+    300,
+    minimum=1,
+)
+DATASET_IMPORT_RATE_LIMIT = os.environ.get(
+    "DATASET_IMPORT_RATE_LIMIT",
+    "12/h",
+)
+DATASET_IMPORT_POLL_INTERVAL_MS = _env_int(
+    "DATASET_IMPORT_POLL_INTERVAL_MS",
+    1500,
+    minimum=250,
+)
+DATASET_IMPORT_REQUIRE_AUTHENTICATION = _env_bool(
+    "DATASET_IMPORT_REQUIRE_AUTHENTICATION",
+    True,
+)
+DATASET_IMPORT_ALLOW_PRIVATE = _env_bool(
+    "DATASET_IMPORT_ALLOW_PRIVATE",
+    False,
+)
+DATASET_IMPORT_ALLOWED_LICENSES = frozenset(
+    _env_csv(
+        "DATASET_IMPORT_ALLOWED_LICENSES",
+        (
+            "cc0-1.0,cc-by-4.0,cc-by-sa-4.0,pddl-1.0,"
+            "odc-by-1.0,odbl-1.0,apache-2.0,mit"
+        ),
+    )
+)
+DATASET_IMPORTED_VISIBILITY = os.environ.get(
+    "DATASET_IMPORTED_VISIBILITY",
+    "internal",
+).strip().lower()
+
+if (
+    DATASET_IMPORT_HARD_TIME_LIMIT_SECONDS
+    <= DATASET_IMPORT_SOFT_TIME_LIMIT_SECONDS
+):
+    raise ValueError(
+        "DATASET_IMPORT_HARD_TIME_LIMIT_SECONDS must be greater than "
+        "DATASET_IMPORT_SOFT_TIME_LIMIT_SECONDS."
+    )
+
+if DATASET_IMPORTED_VISIBILITY not in {
+    "public",
+    "internal",
+    "private",
+}:
+    raise ValueError(
+        "DATASET_IMPORTED_VISIBILITY must be public, internal, or private."
+    )
+
 minimum_visibility_timeout = max(
     SEARCH_RUN_TIMEOUT_SECONDS + 30,
     SEARCH_PROVIDER_RETRY_BACKOFF_MAX_SECONDS
@@ -393,6 +575,9 @@ minimum_visibility_timeout = max(
     + 30,
     SEARCH_DETAIL_RETRY_BACKOFF_MAX_SECONDS
     + SEARCH_DETAIL_HARD_TIME_LIMIT_SECONDS
+    + 30,
+    DATASET_IMPORT_RETRY_BACKOFF_MAX_SECONDS
+    + DATASET_IMPORT_HARD_TIME_LIMIT_SECONDS
     + 30,
 )
 

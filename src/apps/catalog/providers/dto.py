@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 
@@ -22,7 +23,6 @@ class ProviderDatasetSummary:
 
     remote_version: str = ""
     remote_updated_at: datetime | None = None
-
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -39,7 +39,6 @@ class ProviderDatasetDetails:
     license_names: tuple[str, ...] | None = None
     is_private: bool | None = None
     thumbnail_url: str | None = None
-
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -48,3 +47,12 @@ class ProviderSearchPage:
     query: str
     page: int
     items: tuple[ProviderDatasetSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderArtifactDownload:
+    """A provider artifact downloaded into caller-owned temporary storage."""
+
+    path: Path
+    filename: str
+    content_type: str = "application/octet-stream"

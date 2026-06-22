@@ -1,6 +1,8 @@
+from django.conf import settings
 from rest_framework import serializers
 
 from apps.catalog.models import SourceDataset
+from apps.datasets.policies import DatasetImportPolicy
 from apps.search.models import (
     SearchProviderRun,
     SearchResult,
@@ -16,9 +18,7 @@ class SearchRunCreateSerializer(serializers.Serializer):
         trim_whitespace=True,
     )
     sources = serializers.ListField(
-        child=serializers.SlugField(
-            max_length=50,
-        ),
+        child=serializers.SlugField(max_length=50),
         required=False,
         allow_empty=False,
     )
@@ -41,14 +41,10 @@ class SearchRunCreateSerializer(serializers.Serializer):
         )
 
 
-class SearchProviderRunSerializer(
-    serializers.ModelSerializer
-):
+class SearchProviderRunSerializer(serializers.ModelSerializer):
     source = serializers.SerializerMethodField()
     error = serializers.SerializerMethodField()
-    detail_pending_count = serializers.IntegerField(
-        read_only=True,
-    )
+    detail_pending_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = SearchProviderRun
@@ -98,9 +94,7 @@ class SearchRunSerializer(serializers.ModelSerializer):
         many=True,
         read_only=True,
     )
-    is_terminal = serializers.BooleanField(
-        read_only=True,
-    )
+    is_terminal = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = SearchRun
@@ -119,11 +113,10 @@ class SearchRunSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class SourceDatasetSummarySerializer(
-    serializers.ModelSerializer
-):
+class SourceDatasetSummarySerializer(serializers.ModelSerializer):
     source = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
+    import_policy = serializers.SerializerMethodField()
 
     class Meta:
         model = SourceDataset
@@ -151,6 +144,7 @@ class SourceDatasetSummarySerializer(
             "detail_fetched_at",
             "detail_error",
             "last_seen_at",
+            "import_policy",
         )
         read_only_fields = fields
 
@@ -164,16 +158,49 @@ class SourceDatasetSummarySerializer(
         }
 
     @staticmethod
-    def get_description(
-        instance: SourceDataset,
-    ) -> str:
+    def get_description(instance: SourceDataset) -> str:
         return instance.description or instance.subtitle
 
+    def get_import_policy(
+        self,
+        instance: SourceDataset,
+    ) -> dict[str, object]:
+        request = self.context.get("request")
+        is_staff = bool(
+            request
+            and request.user
+            and request.user.is_authenticated
+            and request.user.is_staff
+        )
+        payload = DatasetImportPolicy().evaluate(
+            instance,
+            private_access_authorized=is_staff,
+        ).as_dict()
+        authenticated = bool(
+            request
+            and request.user
+            and request.user.is_authenticated
+        )
+        authentication_required = (
+            settings.DATASET_IMPORT_REQUIRE_AUTHENTICATION
+        )
+        can_request_import = bool(
+            payload["eligible"]
+            and (not authentication_required or authenticated)
+        )
 
-class SourceDatasetSearchResultSerializer(
-    serializers.Serializer
-):
-    """Flatten SearchResult state into the existing dataset response shape."""
+        payload["authentication_required"] = authentication_required
+        payload["can_request_import"] = can_request_import
+        payload["request_message"] = (
+            payload["message"]
+            if can_request_import or not payload["eligible"]
+            else "Sign in before importing this dataset."
+        )
+        return payload
+
+
+class SourceDatasetSearchResultSerializer(serializers.Serializer):
+    """Flatten SearchResult state into the dataset response shape."""
 
     def to_representation(
         self,
@@ -189,15 +216,11 @@ class SourceDatasetSearchResultSerializer(
             {
                 "search_result_id": instance.pk,
                 "rank": instance.rank,
-                "enrichment_status": (
-                    instance.enrichment_status
-                ),
+                "enrichment_status": instance.enrichment_status,
                 "enrichment_attempt_count": (
                     instance.enrichment_attempt_count
                 ),
-                "enrichment_error": self._enrichment_error(
-                    instance
-                ),
+                "enrichment_error": self._enrichment_error(instance),
                 "enrichment_started_at": (
                     instance.enrichment_started_at
                 ),

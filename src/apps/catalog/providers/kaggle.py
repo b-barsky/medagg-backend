@@ -1,4 +1,5 @@
 import json
+import mimetypes
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -7,24 +8,55 @@ from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 
 from .base import DatasetProvider
-from .dto import (ProviderDatasetSummary, ProviderDatasetDetails, ProviderSearchPage)
-from .exceptions import (ProviderAuthenticationError, ProviderConfigurationError, ProviderResponseError,
-                         ProviderUnavailableError)
+from .dto import (
+    ProviderArtifactDownload,
+    ProviderDatasetDetails,
+    ProviderDatasetSummary,
+    ProviderSearchPage,
+)
+from .exceptions import (
+    ProviderAuthenticationError,
+    ProviderConfigurationError,
+    ProviderResponseError,
+    ProviderUnavailableError,
+)
 
 
 class KaggleApiClient(Protocol):
-    def dataset_list(self, *, search: str, page: int) -> list[Any | None] | None:
+    def dataset_list(
+        self,
+        *,
+        search: str,
+        page: int,
+    ) -> list[Any | None] | None:
         ...
 
-    def dataset_metadata(self, dataset: str, path: str) -> str:
+    def dataset_metadata(
+        self,
+        dataset: str,
+        path: str,
+    ) -> str:
+        ...
+
+    def dataset_download_files(
+        self,
+        dataset: str,
+        path: str | None = None,
+        force: bool = False,
+        quiet: bool = True,
+        unzip: bool = False,
+    ) -> str | None:
         ...
 
 
 class KaggleProvider(DatasetProvider):
     slug = "kaggle"
 
-    def __init__(self, api: KaggleApiClient | None = None) -> None:
-        self._api = (api if api is not None else self._build_client())
+    def __init__(
+        self,
+        api: KaggleApiClient | None = None,
+    ) -> None:
+        self._api = api if api is not None else self._build_client()
 
     @staticmethod
     def _build_client() -> KaggleApiClient:
@@ -32,29 +64,41 @@ class KaggleProvider(DatasetProvider):
         Import Kaggle only when this provider is used.
 
         Importing the package initializes its global API client and may
-        authenticate, so Django checks and unit-test discovery must not
-        depend on live credentials.
+        authenticate, so Django checks and unit-test discovery must not depend
+        on live credentials.
         """
 
         try:
             import kaggle
         except SystemExit as exc:
-            raise ProviderAuthenticationError("Kaggle authentication failed. Configure "
-                                              "KAGGLE_API_TOKEN or a Kaggle token file.") from exc
+            raise ProviderAuthenticationError(
+                "Kaggle authentication failed. Configure KAGGLE_API_TOKEN "
+                "or a Kaggle token file."
+            ) from exc
         except ImportError as exc:
-            raise ProviderConfigurationError("The 'kaggle' package is not installed.") from exc
+            raise ProviderConfigurationError(
+                "The 'kaggle' package is not installed."
+            ) from exc
         except Exception as exc:
-            raise ProviderAuthenticationError("Kaggle API initialization failed.") from exc
+            raise ProviderAuthenticationError(
+                "Kaggle API initialization failed."
+            ) from exc
 
         api = getattr(kaggle, "api", None)
 
         if api is None:
-            raise ProviderConfigurationError("The installed Kaggle package does not "
-                                             "expose kaggle.api.")
+            raise ProviderConfigurationError(
+                "The installed Kaggle package does not expose kaggle.api."
+            )
 
         return api
 
-    def search_summary(self, query: str, *, page: int = 1) -> ProviderSearchPage:
+    def search_summary(
+        self,
+        query: str,
+        *,
+        page: int = 1,
+    ) -> ProviderSearchPage:
         normalized_query = query.strip()
 
         if not normalized_query:
@@ -64,37 +108,66 @@ class KaggleProvider(DatasetProvider):
             raise ValueError("Page must be greater than or equal to 1.")
 
         try:
-            results = self._api.dataset_list(search=normalized_query, page=page) or []
+            results = self._api.dataset_list(
+                search=normalized_query,
+                page=page,
+            ) or []
         except Exception as exc:
-            raise ProviderUnavailableError("Kaggle dataset search failed.") from exc
+            raise ProviderUnavailableError(
+                "Kaggle dataset search failed."
+            ) from exc
 
-        items = tuple(self._to_summary(dataset) for dataset in results if dataset is not None)
+        items = tuple(
+            self._to_summary(dataset)
+            for dataset in results
+            if dataset is not None
+        )
 
-        return ProviderSearchPage(query=normalized_query, page=page, items=items)
+        return ProviderSearchPage(
+            query=normalized_query,
+            page=page,
+            items=items,
+        )
 
-    def fetch_details(self, external_id: str) -> ProviderDatasetDetails:
+    def fetch_details(
+        self,
+        external_id: str,
+    ) -> ProviderDatasetDetails:
         normalized_external_id = external_id.strip().lower()
 
         if not normalized_external_id:
             raise ValueError("External dataset ID cannot be blank.")
 
         try:
-            with TemporaryDirectory(prefix="medagg-kaggle-") as directory:
-                metadata_path = self._api.dataset_metadata(normalized_external_id, directory)
-                raw_text = Path(metadata_path).read_text(encoding="utf-8")
+            with TemporaryDirectory(
+                prefix="medagg-kaggle-",
+            ) as directory:
+                metadata_path = self._api.dataset_metadata(
+                    normalized_external_id,
+                    directory,
+                )
+                raw_text = Path(metadata_path).read_text(
+                    encoding="utf-8",
+                )
         except Exception as exc:
-            raise ProviderUnavailableError("Kaggle metadata retrieval failed for "
-                                           f"'{normalized_external_id}'.") from exc
+            raise ProviderUnavailableError(
+                "Kaggle metadata retrieval failed for "
+                f"'{normalized_external_id}'."
+            ) from exc
 
         try:
             payload = json.loads(raw_text)
         except (TypeError, json.JSONDecodeError) as exc:
-            raise ProviderResponseError("Kaggle returned invalid metadata JSON for "
-                                        f"'{normalized_external_id}'.") from exc
+            raise ProviderResponseError(
+                "Kaggle returned invalid metadata JSON for "
+                f"'{normalized_external_id}'."
+            ) from exc
 
         if not isinstance(payload, dict):
-            raise ProviderResponseError("Kaggle metadata must be a JSON object for "
-                                        f"'{normalized_external_id}'.")
+            raise ProviderResponseError(
+                "Kaggle metadata must be a JSON object for "
+                f"'{normalized_external_id}'."
+            )
 
         info_candidate = payload.get("info")
         info: Mapping[str, Any]
@@ -104,69 +177,282 @@ class KaggleProvider(DatasetProvider):
         elif isinstance(info_candidate, Mapping):
             info = info_candidate
         else:
-            raise ProviderResponseError("Kaggle metadata field 'info' must be an object for "
-                                        f"'{normalized_external_id}'.")
+            raise ProviderResponseError(
+                "Kaggle metadata field 'info' must be an object for "
+                f"'{normalized_external_id}'."
+            )
 
-        return ProviderDatasetDetails(external_id=normalized_external_id, title=self._optional_text(info.get("title")),
-                                      subtitle=self._optional_text(info.get("subtitle")),
-                                      description=self._optional_text(info.get("description")),
-                                      license_names=self._optional_license_names(info.get("licenses")),
-                                      is_private=self._optional_boolean(info.get("isPrivate")),
-                                      thumbnail_url=self._optional_text(
-                                          info.get("image") or info.get("thumbnailImageUrl") or info.get(
-                                              "thumbnailUrl")), metadata=payload)
+        thumbnail_value = self._first_present_value(
+            info,
+            "image",
+            "thumbnailImageUrl",
+            "thumbnailUrl",
+        )
+
+        return ProviderDatasetDetails(
+            external_id=normalized_external_id,
+            title=self._optional_text(info.get("title")),
+            subtitle=self._optional_text(info.get("subtitle")),
+            description=self._optional_text(info.get("description")),
+            license_names=self._license_names(info.get("licenses")),
+            is_private=self._optional_boolean(info.get("isPrivate")),
+            thumbnail_url=self._optional_text(thumbnail_value),
+            metadata=payload,
+        )
+
+    def download_artifact(
+        self,
+        external_id: str,
+        destination: Path,
+    ) -> ProviderArtifactDownload:
+        normalized_external_id = external_id.strip().lower()
+
+        if not normalized_external_id:
+            raise ValueError("External dataset ID cannot be blank.")
+
+        destination = destination.resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+
+        try:
+            returned_path = self._api.dataset_download_files(
+                normalized_external_id,
+                path=str(destination),
+                force=True,
+                quiet=True,
+                unzip=False,
+            )
+        except Exception as exc:
+            raise ProviderUnavailableError(
+                "Kaggle artifact download failed for "
+                f"'{normalized_external_id}'."
+            ) from exc
+
+        artifact_path = self._resolve_downloaded_artifact(
+            destination=destination,
+            returned_path=returned_path,
+            external_id=normalized_external_id,
+        )
+        content_type = (
+            mimetypes.guess_type(artifact_path.name)[0]
+            or "application/zip"
+        )
+
+        return ProviderArtifactDownload(
+            path=artifact_path,
+            filename=artifact_path.name,
+            content_type=content_type,
+        )
+
+    @staticmethod
+    def _resolve_downloaded_artifact(
+        *,
+        destination: Path,
+        returned_path: str | None,
+        external_id: str,
+    ) -> Path:
+        candidates: list[Path] = []
+
+        if returned_path:
+            returned = Path(returned_path)
+
+            if not returned.is_absolute():
+                returned = destination / returned
+
+            if returned.is_file():
+                candidates.append(returned.resolve())
+
+        for candidate in destination.rglob("*"):
+            if candidate.is_file():
+                resolved = candidate.resolve()
+
+                if resolved not in candidates:
+                    candidates.append(resolved)
+
+        safe_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate == destination
+            or destination in candidate.parents
+        ]
+
+        if not safe_candidates:
+            raise ProviderResponseError(
+                "Kaggle reported a successful download but produced no "
+                f"artifact for '{external_id}'."
+            )
+
+        expected_name = f"{external_id.rsplit('/', 1)[-1]}.zip"
+        exact_matches = [
+            candidate
+            for candidate in safe_candidates
+            if candidate.name.lower() == expected_name.lower()
+        ]
+
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        zip_candidates = [
+            candidate
+            for candidate in safe_candidates
+            if candidate.suffix.lower() == ".zip"
+        ]
+
+        if len(zip_candidates) == 1:
+            return zip_candidates[0]
+
+        if len(safe_candidates) == 1:
+            return safe_candidates[0]
+
+        raise ProviderResponseError(
+            "Kaggle produced multiple artifacts and no canonical archive "
+            f"could be selected for '{external_id}'."
+        )
 
     @classmethod
-    def _to_summary(cls, dataset: Any) -> ProviderDatasetSummary:
-        external_id = cls._first_text(dataset, "ref").lower()
+    def _to_summary(
+        cls,
+        dataset: Any,
+    ) -> ProviderDatasetSummary:
+        external_id = cls._first_text(
+            dataset,
+            "ref",
+        ).lower()
 
         if not external_id:
-            raise ProviderResponseError("Kaggle returned a dataset without a reference.")
+            raise ProviderResponseError(
+                "Kaggle returned a dataset without a reference."
+            )
 
-        source_url = cls._first_text(dataset, "url")
+        source_url = cls._first_text(
+            dataset,
+            "url",
+        )
 
         if not source_url:
-            source_url = ("https://www.kaggle.com/datasets/"
-                          f"{external_id}")
+            source_url = (
+                "https://www.kaggle.com/datasets/"
+                f"{external_id}"
+            )
 
-        owner_ref = cls._first_text(dataset, "owner_ref", "ownerRef")
+        owner_ref = cls._first_text(
+            dataset,
+            "owner_ref",
+            "ownerRef",
+        )
 
         if not owner_ref:
             owner_ref = external_id.partition("/")[0]
 
-        owner_name = cls._first_text(dataset, "owner_name", "ownerName", "creator_name", "creatorName")
+        owner_name = cls._first_text(
+            dataset,
+            "owner_name",
+            "ownerName",
+            "creator_name",
+            "creatorName",
+        )
 
         if not owner_name:
             owner_name = owner_ref
 
-        version = cls._get(dataset, "current_version_number", "currentVersionNumber")
+        version = cls._get(
+            dataset,
+            "current_version_number",
+            "currentVersionNumber",
+        )
 
-        return ProviderDatasetSummary(external_id=external_id, source_url=source_url,
-                                      title=(cls._first_text(dataset, "title") or external_id), owner_name=owner_name,
-                                      owner_ref=owner_ref,
-                                      total_bytes=cls._optional_int(cls._get(dataset, "total_bytes", "totalBytes")),
-                                      download_count=cls._optional_int(
-                                          cls._get(dataset, "download_count", "downloadCount")),
-                                      vote_count=cls._optional_int(cls._get(dataset, "vote_count", "voteCount")),
-                                      view_count=cls._optional_int(cls._get(dataset, "view_count", "viewCount")),
-                                      usability_rating=cls._optional_decimal(
-                                          cls._get(dataset, "usability_rating", "usabilityRating")),
-                                      remote_version="" if version is None else str(version),
-                                      remote_updated_at=cls._optional_datetime(
-                                          cls._get(dataset, "last_updated", "lastUpdated")),
-                                      metadata=cls._metadata(dataset))
+        return ProviderDatasetSummary(
+            external_id=external_id,
+            source_url=source_url,
+            title=(
+                cls._first_text(dataset, "title")
+                or external_id
+            ),
+            owner_name=owner_name,
+            owner_ref=owner_ref,
+            total_bytes=cls._optional_int(
+                cls._get(
+                    dataset,
+                    "total_bytes",
+                    "totalBytes",
+                )
+            ),
+            download_count=cls._optional_int(
+                cls._get(
+                    dataset,
+                    "download_count",
+                    "downloadCount",
+                )
+            ),
+            vote_count=cls._optional_int(
+                cls._get(
+                    dataset,
+                    "vote_count",
+                    "voteCount",
+                )
+            ),
+            view_count=cls._optional_int(
+                cls._get(
+                    dataset,
+                    "view_count",
+                    "viewCount",
+                )
+            ),
+            usability_rating=cls._optional_decimal(
+                cls._get(
+                    dataset,
+                    "usability_rating",
+                    "usabilityRating",
+                )
+            ),
+            remote_version=(
+                ""
+                if version is None
+                else str(version)
+            ),
+            remote_updated_at=cls._optional_datetime(
+                cls._get(
+                    dataset,
+                    "last_updated",
+                    "lastUpdated",
+                )
+            ),
+            metadata=cls._metadata(dataset),
+        )
 
     @staticmethod
-    def _single_value(value: Any, name: str) -> Any:
+    def _first_present_value(
+        value: Mapping[str, Any],
+        *names: str,
+    ) -> Any:
+        """Return the first explicitly non-null provider value."""
+
+        for name in names:
+            if name in value and value[name] is not None:
+                return value[name]
+
+        return None
+
+    @staticmethod
+    def _single_value(
+        value: Any,
+        name: str,
+    ) -> Any:
         if isinstance(value, Mapping):
             return value.get(name)
 
         return getattr(value, name, None)
 
     @classmethod
-    def _get(cls, value: Any, *names: str) -> Any:
+    def _get(
+        cls,
+        value: Any,
+        *names: str,
+    ) -> Any:
         for name in names:
-            candidate = cls._single_value(value, name)
+            candidate = cls._single_value(
+                value,
+                name,
+            )
 
             if candidate is not None:
                 return candidate
@@ -174,9 +460,15 @@ class KaggleProvider(DatasetProvider):
         return None
 
     @classmethod
-    def _first_text(cls, value: Any, *names: str) -> str:
+    def _first_text(
+        cls,
+        value: Any,
+        *names: str,
+    ) -> str:
         for name in names:
-            text = cls._optional_text(cls._single_value(value, name))
+            text = cls._text(
+                cls._single_value(value, name)
+            )
 
             if text:
                 return text
@@ -184,7 +476,16 @@ class KaggleProvider(DatasetProvider):
         return ""
 
     @staticmethod
+    def _text(value: Any) -> str:
+        if value is None:
+            return ""
+
+        return str(value).strip()
+
+    @staticmethod
     def _optional_text(value: Any) -> str | None:
+        """Return None when the provider omitted the field entirely."""
+
         if value is None:
             return None
 
@@ -201,17 +502,25 @@ class KaggleProvider(DatasetProvider):
             return None
 
     @staticmethod
-    def _optional_decimal(value: Any) -> Decimal | None:
+    def _optional_decimal(
+        value: Any,
+    ) -> Decimal | None:
         if value is None:
             return None
 
         try:
             return Decimal(str(value))
-        except (InvalidOperation, TypeError, ValueError):
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ):
             return None
 
     @staticmethod
-    def _optional_datetime(value: Any) -> datetime | None:
+    def _optional_datetime(
+        value: Any,
+    ) -> datetime | None:
         parsed: datetime
 
         if isinstance(value, datetime):
@@ -248,10 +557,20 @@ class KaggleProvider(DatasetProvider):
         if isinstance(value, str):
             normalized = value.strip().lower()
 
-            if normalized in {"1", "true", "yes", "on"}:
+            if normalized in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
                 return True
 
-            if normalized in {"0", "false", "no", "off"}:
+            if normalized in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }:
                 return False
 
         if isinstance(value, (int, float)) and value in {0, 1}:
@@ -260,7 +579,10 @@ class KaggleProvider(DatasetProvider):
         return None
 
     @classmethod
-    def _optional_license_names(cls, value: Any) -> tuple[str, ...] | None:
+    def _license_names(
+        cls,
+        value: Any,
+    ) -> tuple[str, ...] | None:
         if value is None:
             return None
 
@@ -277,7 +599,9 @@ class KaggleProvider(DatasetProvider):
 
         for candidate in candidates:
             if isinstance(candidate, Mapping):
-                name = cls._optional_text(candidate.get("name"))
+                name = cls._optional_text(
+                    candidate.get("name")
+                )
             else:
                 name = cls._optional_text(candidate)
 
@@ -288,11 +612,17 @@ class KaggleProvider(DatasetProvider):
         return tuple(names)
 
     @staticmethod
-    def _metadata(dataset: Any) -> dict[str, Any]:
+    def _metadata(
+        dataset: Any,
+    ) -> dict[str, Any]:
         if isinstance(dataset, Mapping):
             raw = dict(dataset)
         else:
-            to_dict = getattr(dataset, "to_dict", None)
+            to_dict = getattr(
+                dataset,
+                "to_dict",
+                None,
+            )
 
             if not callable(to_dict):
                 return {}
@@ -305,5 +635,9 @@ class KaggleProvider(DatasetProvider):
         if not isinstance(raw, dict):
             return {}
 
-        # Ensure the result can be stored in JSONField.
-        return json.loads(json.dumps(raw, default=str))
+        return json.loads(
+            json.dumps(
+                raw,
+                default=str,
+            )
+        )

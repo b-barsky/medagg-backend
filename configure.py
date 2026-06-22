@@ -299,7 +299,20 @@ def docker_build_handler(
                 "--detach",
                 "--wait",
                 "db",
-                "redis"
+                "redis",
+                "minio",
+            )
+        )
+
+        logger.info("initializing object storage...")
+        run_cmd(
+            (
+                *compose,
+                "run",
+                "--rm",
+                "--build",
+                "--no-deps",
+                "object-storage-init"
             )
         )
 
@@ -324,6 +337,7 @@ def docker_build_handler(
                 "--build",
                 "--wait",
                 "celery-worker",
+                "celery-import-worker"
             )
         )
 
