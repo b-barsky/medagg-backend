@@ -1,4 +1,3 @@
-from django.conf import settings
 from rest_framework import serializers
 
 from apps.catalog.models import SourceDataset
@@ -181,12 +180,9 @@ class SourceDatasetSummarySerializer(serializers.ModelSerializer):
             and request.user
             and request.user.is_authenticated
         )
-        authentication_required = (
-            settings.DATASET_IMPORT_REQUIRE_AUTHENTICATION
-        )
+        authentication_required = True
         can_request_import = bool(
-            payload["eligible"]
-            and (not authentication_required or authenticated)
+            payload["eligible"] and authenticated
         )
 
         payload["authentication_required"] = authentication_required

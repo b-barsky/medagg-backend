@@ -131,6 +131,9 @@ INSTALLED_APPS = [
 ]
 
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework.authentication.SessionAuthentication",
+    ),
     "DEFAULT_PAGINATION_CLASS": (
         "rest_framework.pagination.PageNumberPagination"
     ),
@@ -139,7 +142,48 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
+    "DEFAULT_THROTTLE_RATES": {
+        "login": os.environ.get("AUTH_LOGIN_RATE", "10/minute"),
+        "registration": os.environ.get(
+            "AUTH_REGISTRATION_RATE",
+            "5/hour",
+        ),
+    },
 }
+
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SECURE = _env_bool(
+    "DJANGO_SESSION_COOKIE_SECURE",
+    False,
+)
+SESSION_COOKIE_AGE = _env_int(
+    "DJANGO_SESSION_COOKIE_AGE_SECONDS",
+    14 * 24 * 60 * 60,
+    minimum=60,
+)
+SESSION_SAVE_EVERY_REQUEST = False
+
+# The React client reads the CSRF cookie and mirrors it into X-CSRFToken.
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SECURE = _env_bool(
+    "DJANGO_CSRF_COOKIE_SECURE",
+    False,
+)
+_default_csrf_trusted_origins = (
+    "http://localhost:5173,http://127.0.0.1:5173"
+    if DEBUG
+    else ""
+)
+CSRF_TRUSTED_ORIGINS = [
+    value.strip()
+    for value in os.environ.get(
+        "DJANGO_CSRF_TRUSTED_ORIGINS",
+        _default_csrf_trusted_origins,
+    ).split(",")
+    if value.strip()
+]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

@@ -1,25 +1,41 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from . import views
 
+
 app_name = "users"
 
-router = DefaultRouter()
+urlpatterns = [
+    path(
+        "auth/csrf/",
+        views.CsrfTokenView.as_view(),
+        name="auth-csrf",
+    ),
+    path(
+        "auth/register/",
+        views.RegisterView.as_view(),
+        name="auth-register",
+    ),
+    path(
+        "auth/login/",
+        views.LoginView.as_view(),
+        name="auth-login",
+    ),
+    path(
+        "auth/logout/",
+        views.LogoutView.as_view(),
+        name="auth-logout",
+    ),
+    path(
+        "me/password/",
+        views.ChangePasswordView.as_view(),
+        name="me-password",
+    ),
+]
 
+router = DefaultRouter()
 router.register(r"groups", views.GroupViewSet, basename="group")
 router.register(r"", views.UserViewSet, basename="user")
 
-"""
-Add aditional urls that are not part of ViewSets.
-Note: Remember that every added bewlow will be part
-of 'users/' url-prefix.
-
-For example:
-urlpatterns = [
-    path("foo", views.BarBazView.as_view(), name="foo-bar"),
-]
-"""
-urlpatterns = []
-
-# Combine ViewSet's urls with others
 urlpatterns += router.urls

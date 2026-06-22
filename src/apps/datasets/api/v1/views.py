@@ -1,16 +1,21 @@
 import math
 
 from django.conf import settings
+from django.db.models import Prefetch, Q
 from django.http import Http404
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.datasets.access import (
+    DatasetAccessDenied,
+    DatasetAccessService,
+)
 from apps.datasets.models import (
     DatasetArtifact,
     DatasetImport,
     DatasetImportStatus,
-    DatasetVisibility,
+    DatasetMembership,
 )
 from apps.datasets.services import (
     DatasetImportError,
@@ -33,37 +38,41 @@ from .serializers import (
 
 
 class DatasetsViewSet(viewsets.ReadOnlyModelViewSet):
+    """The authenticated user's personal dataset library."""
+
     serializer_class = DatasetDetailedSerializer
-    permission_classes = (permissions.AllowAny,)
+    permission_classes = (permissions.IsAuthenticated,)
 
     @property
     def dataset_service(self) -> DatasetService:
         return DatasetService()
 
     def get_queryset(self):
-        queryset = self.dataset_service.get_all_detailed()
         user = self.request.user
 
-        if user and user.is_authenticated and user.is_staff:
-            return queryset
+        if not getattr(user, "is_authenticated", False):
+            return self.dataset_service.get_all_detailed().none()
 
-        if user and user.is_authenticated:
-            return queryset.exclude(
-                visibility=DatasetVisibility.PRIVATE
+        memberships = DatasetMembership.objects.filter(
+            user=user
+        ).select_related("first_import")
+
+        return (
+            self.dataset_service.get_all_detailed()
+            .filter(memberships__user=user)
+            .prefetch_related(
+                Prefetch(
+                    "memberships",
+                    queryset=memberships,
+                    to_attr="current_user_memberships",
+                )
             )
-
-        if settings.DATASET_IMPORT_REQUIRE_AUTHENTICATION:
-            return queryset.filter(
-                visibility=DatasetVisibility.PUBLIC
-            )
-
-        return queryset.exclude(
-            visibility=DatasetVisibility.PRIVATE
+            .distinct()
         )
 
 
 class DatasetImportViewSet(viewsets.GenericViewSet):
-    queryset = DatasetImport.objects.all()
+    queryset = DatasetImport.objects.none()
     permission_classes = (DatasetImportPermission,)
     serializer_class = DatasetImportSerializer
     pagination_class = None
@@ -81,21 +90,32 @@ class DatasetImportViewSet(viewsets.GenericViewSet):
     def import_service(self) -> DatasetImportService:
         return DatasetImportService()
 
+    @property
+    def access_service(self) -> DatasetAccessService:
+        return DatasetAccessService(self.import_service)
+
     def get_queryset(self):
-        queryset = (
+        user = self.request.user
+
+        if not getattr(user, "is_authenticated", False):
+            return DatasetImport.objects.none()
+
+        return (
             DatasetImport.objects.select_related(
                 "source_dataset__source",
                 "dataset",
                 "dataset_version",
             )
-            .prefetch_related("dataset_version__artifacts")
-            .all()
+            .prefetch_related(
+                "dataset_version__artifacts",
+                "requesters",
+            )
+            .filter(
+                Q(requesters__user=user)
+                | Q(requested_by=user)
+            )
+            .distinct()
         )
-        # Import runs coordinate a shared local artifact. Their UUIDs are
-        # unguessable, and the serializer does not expose the requester.
-        # Returning the shared run lets concurrent requesters poll the same
-        # durable job instead of receiving a Location they cannot access.
-        return queryset
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -104,18 +124,21 @@ class DatasetImportViewSet(viewsets.GenericViewSet):
         return DatasetImportSerializer
 
     def create(self, request, *args, **kwargs):
-        request_serializer = self.get_serializer(
-            data=request.data
-        )
+        request_serializer = self.get_serializer(data=request.data)
         request_serializer.is_valid(raise_exception=True)
         validated = request_serializer.validated_data
 
         try:
-            creation = self.import_service.create_import(
+            access_result = self.access_service.request_import(
+                user=request.user,
                 source_dataset_id=validated["source_dataset"].pk,
                 accepted_license=validated["accept_license"],
                 license_fingerprint=validated["license_fingerprint"],
-                requested_by=request.user,
+            )
+        except DatasetAccessDenied as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_403_FORBIDDEN,
             )
         except DatasetImportPolicyRejected as exc:
             return Response(
@@ -126,24 +149,30 @@ class DatasetImportViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        creation = access_result.creation
+        import_run = creation.import_run
+
         if creation.created:
             try:
-                self.import_service.enqueue_import(
-                    creation.import_run.pk
-                )
+                self.import_service.enqueue_import(import_run.pk)
             except DatasetImportError as exc:
                 return Response(
                     {"detail": str(exc)},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
 
-        import_run = self.import_service.get_import(
-            creation.import_run.pk
-        )
+        # A reused version or a concurrently completed worker may already be
+        # available. This grant only creates a membership and never copies an
+        # object-storage artifact.
+        self.access_service.grant_import_access(import_run.pk)
+        import_run = self.import_service.get_import(import_run.pk)
+
         response_status = (
             status.HTTP_200_OK
-            if creation.reused_version
-            or import_run.status == DatasetImportStatus.SUCCEEDED
+            if (
+                creation.reused_version
+                or import_run.status == DatasetImportStatus.SUCCEEDED
+            )
             else status.HTTP_202_ACCEPTED
         )
         location = self.reverse_action(
@@ -164,14 +193,7 @@ class DatasetImportViewSet(viewsets.GenericViewSet):
         )
 
         if not import_run.is_terminal:
-            response["Retry-After"] = str(
-                max(
-                    1,
-                    math.ceil(
-                        settings.DATASET_IMPORT_POLL_INTERVAL_MS / 1000
-                    ),
-                )
-            )
+            response["Retry-After"] = self._retry_after_seconds()
 
         return response
 
@@ -180,6 +202,10 @@ class DatasetImportViewSet(viewsets.GenericViewSet):
             import_run = self.get_queryset().get(pk=pk)
         except DatasetImport.DoesNotExist as exc:
             raise Http404("Dataset import not found.") from exc
+
+        if import_run.status == DatasetImportStatus.SUCCEEDED:
+            self.access_service.grant_import_access(import_run.pk)
+            import_run = self.import_service.get_import(import_run.pk)
 
         response = Response(
             DatasetImportSerializer(
@@ -190,25 +216,26 @@ class DatasetImportViewSet(viewsets.GenericViewSet):
         response["Cache-Control"] = "no-store"
 
         if not import_run.is_terminal:
-            response["Retry-After"] = str(
-                max(
-                    1,
-                    math.ceil(
-                        settings.DATASET_IMPORT_POLL_INTERVAL_MS / 1000
-                    ),
-                )
-            )
+            response["Retry-After"] = self._retry_after_seconds()
 
         return response
+
+    @staticmethod
+    def _retry_after_seconds() -> str:
+        return str(
+            max(
+                1,
+                math.ceil(
+                    settings.DATASET_IMPORT_POLL_INTERVAL_MS / 1000
+                ),
+            )
+        )
 
 
 class DatasetArtifactViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet,
 ):
-    queryset = DatasetArtifact.objects.select_related(
-        "dataset_version__dataset"
-    )
     serializer_class = DatasetArtifactSerializer
     permission_classes = (DatasetArtifactPermission,)
     pagination_class = None
@@ -221,6 +248,22 @@ class DatasetArtifactViewSet(
         "[0-9a-fA-F]{4}-"
         "[0-9a-fA-F]{12}"
     )
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if not getattr(user, "is_authenticated", False):
+            return DatasetArtifact.objects.none()
+
+        return (
+            DatasetArtifact.objects.select_related(
+                "dataset_version__dataset"
+            )
+            .filter(
+                dataset_version__dataset__memberships__user=user
+            )
+            .distinct()
+        )
 
     @action(detail=True, methods=("get",))
     def download(self, request, pk=None):

@@ -14,6 +14,7 @@ from apps.catalog.providers.exceptions import (
     ProviderUnavailableError,
 )
 
+from .access import DatasetAccessService
 from .models import DatasetImport
 from .services import (
     DatasetImportError,
@@ -36,6 +37,47 @@ def _retry_delay(retry_number: int) -> int:
         settings.DATASET_IMPORT_RETRY_BACKOFF_MAX_SECONDS,
     )
     return random.randint(1, max(1, maximum))
+
+
+def _grant_requester_access(
+    import_id: str,
+    log_context: dict[str, object],
+) -> int:
+    try:
+        granted_count = DatasetAccessService().grant_import_access(
+            import_id
+        )
+    except DatabaseOperationalError:
+        logger.exception(
+            "Database unavailable while granting dataset access.",
+            extra={
+                **log_context,
+                "event": "datasets.import.access_database_unavailable",
+            },
+        )
+        raise
+    except Exception:
+        # Polling the import endpoint performs the same idempotent grant, so a
+        # non-database bookkeeping failure must not invalidate a successful
+        # artifact import.
+        logger.exception(
+            "Dataset import succeeded but access bookkeeping failed.",
+            extra={
+                **log_context,
+                "event": "datasets.import.access_grant_failed",
+            },
+        )
+        return 0
+
+    logger.info(
+        "Granted completed dataset access to import requesters.",
+        extra={
+            **log_context,
+            "event": "datasets.import.access_granted",
+            "granted_count": granted_count,
+        },
+    )
+    return granted_count
 
 
 @shared_task(
@@ -287,6 +329,7 @@ def import_dataset_artifact(
         return
 
     if result is None:
+        _grant_requester_access(import_id, log_context)
         logger.info(
             "Skipped a terminal dataset import.",
             extra={
@@ -295,6 +338,8 @@ def import_dataset_artifact(
             },
         )
         return
+
+    granted_count = _grant_requester_access(import_id, log_context)
 
     logger.info(
         "Dataset artifact import completed.",
@@ -308,5 +353,6 @@ def import_dataset_artifact(
             "size_bytes": result.size_bytes,
             "object_reused": result.object_reused,
             "version_reused": result.version_reused,
+            "granted_count": granted_count,
         },
     )

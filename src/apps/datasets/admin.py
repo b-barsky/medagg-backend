@@ -5,6 +5,8 @@ from .models import (
     Dataset,
     DatasetArtifact,
     DatasetImport,
+    DatasetImportRequester,
+    DatasetMembership,
     DatasetMLTask,
     DatasetModality,
     DatasetTag,
@@ -79,7 +81,6 @@ class DatasetAdmin(admin.ModelAdmin):
         "title",
         "source_dataset__external_id",
     )
-    filter_horizontal = ()
     readonly_fields = (
         "legacy_metadata",
         "created_at",
@@ -118,6 +119,19 @@ class DatasetArtifactAdmin(admin.ModelAdmin):
     )
 
 
+class DatasetImportRequesterInline(admin.TabularInline):
+    model = DatasetImportRequester
+    extra = 0
+    can_delete = False
+    readonly_fields = (
+        "user",
+        "accepted_license",
+        "license_fingerprint",
+        "created_at",
+        "access_granted_at",
+    )
+
+
 @admin.register(DatasetImport)
 class DatasetImportAdmin(admin.ModelAdmin):
     list_display = (
@@ -135,6 +149,7 @@ class DatasetImportAdmin(admin.ModelAdmin):
         "source_dataset__external_id",
         "source_revision",
         "celery_task_id",
+        "requesters__user__username",
     )
     readonly_fields = (
         "id",
@@ -160,6 +175,55 @@ class DatasetImportAdmin(admin.ModelAdmin):
         "finished_at",
         "created_at",
         "updated_at",
+    )
+    inlines = (DatasetImportRequesterInline,)
+
+
+@admin.register(DatasetMembership)
+class DatasetMembershipAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "dataset",
+        "acquisition",
+        "created_at",
+    )
+    list_filter = ("acquisition",)
+    search_fields = (
+        "user__username",
+        "user__email",
+        "dataset__title",
+    )
+    readonly_fields = (
+        "user",
+        "dataset",
+        "first_import",
+        "acquisition",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(DatasetImportRequester)
+class DatasetImportRequesterAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "import_run",
+        "accepted_license",
+        "created_at",
+        "access_granted_at",
+    )
+    search_fields = (
+        "user__username",
+        "user__email",
+        "import_run__id",
+    )
+    readonly_fields = (
+        "import_run",
+        "user",
+        "accepted_license",
+        "license_fingerprint",
+        "created_at",
+        "access_granted_at",
     )
 
 

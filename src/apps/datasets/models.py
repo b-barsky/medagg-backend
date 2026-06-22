@@ -356,6 +356,102 @@ class DatasetImport(models.Model):
         return f"{self.source_dataset} ({self.status})"
 
 
+class DatasetMembershipAcquisition(models.TextChoices):
+    IMPORTED = "imported", "Imported"
+    SHARED = "shared", "Shared"
+    DERIVED = "derived", "Derived"
+    MANUAL = "manual", "Manual"
+
+
+class DatasetMembership(models.Model):
+    """
+    Grants one user access to one managed dataset.
+
+    The dataset, versions, and artifacts remain shared. Membership records are
+    the user's personal library and never duplicate the stored object.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dataset_memberships",
+    )
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    first_import = models.ForeignKey(
+        DatasetImport,
+        on_delete=models.SET_NULL,
+        related_name="granted_memberships",
+        null=True,
+        blank=True,
+    )
+    acquisition = models.CharField(
+        max_length=16,
+        choices=DatasetMembershipAcquisition.choices,
+        default=DatasetMembershipAcquisition.IMPORTED,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "dataset"),
+                name="datasets_member_user_ds_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=("user", "-created_at"),
+                name="datasets_member_user_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user} -> {self.dataset}"
+
+
+class DatasetImportRequester(models.Model):
+    """A user who requested or joined a durable shared import run."""
+
+    import_run = models.ForeignKey(
+        DatasetImport,
+        on_delete=models.CASCADE,
+        related_name="requesters",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dataset_import_requests",
+    )
+    accepted_license = models.BooleanField(default=True)
+    license_fingerprint = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    access_granted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("created_at", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("import_run", "user"),
+                name="datasets_req_import_user_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=("user", "-created_at"),
+                name="datasets_req_user_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user} requested {self.import_run_id}"
+
+
 class DatasetModality(models.Model):
     dataset = models.ForeignKey(Dataset, on_delete=models.CASCADE)
     modality = models.ForeignKey(Modality, on_delete=models.CASCADE)

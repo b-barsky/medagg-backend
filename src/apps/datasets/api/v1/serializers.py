@@ -2,12 +2,12 @@ from django.conf import settings
 from rest_framework import serializers
 
 from apps.catalog.models import SourceDataset
-
 from apps.datasets.models import (
     AnatomicalArea,
     Dataset,
     DatasetArtifact,
     DatasetImport,
+    DatasetMembership,
     DatasetVersion,
     MLTask,
     Modality,
@@ -57,10 +57,7 @@ class DatasetArtifactSerializer(serializers.ModelSerializer):
 
 
 class DatasetVersionSerializer(serializers.ModelSerializer):
-    artifacts = DatasetArtifactSerializer(
-        many=True,
-        read_only=True,
-    )
+    artifacts = DatasetArtifactSerializer(many=True, read_only=True)
     error = serializers.SerializerMethodField()
 
     class Meta:
@@ -104,6 +101,8 @@ class DatasetDetailedSerializer(serializers.ModelSerializer):
     tags = TagSerializer(many=True, read_only=True)
     versions = serializers.SerializerMethodField()
     source = serializers.SerializerMethodField()
+    added_at = serializers.SerializerMethodField()
+    acquisition = serializers.SerializerMethodField()
 
     class Meta:
         model = Dataset
@@ -124,26 +123,53 @@ class DatasetDetailedSerializer(serializers.ModelSerializer):
             "ml_tasks",
             "tags",
             "versions",
+            "added_at",
+            "acquisition",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
 
-    @staticmethod
-    def get_versions(instance: Dataset) -> list[dict[str, object]]:
-        versions = getattr(
+    def _current_membership(
+        self,
+        instance: Dataset,
+    ) -> DatasetMembership | None:
+        memberships = getattr(
             instance,
-            "available_versions",
+            "current_user_memberships",
             None,
         )
+
+        if memberships is not None:
+            return memberships[0] if memberships else None
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if not getattr(user, "is_authenticated", False):
+            return None
+
+        return DatasetMembership.objects.filter(
+            user=user,
+            dataset=instance,
+        ).first()
+
+    def get_added_at(self, instance: Dataset):
+        membership = self._current_membership(instance)
+        return membership.created_at if membership else None
+
+    def get_acquisition(self, instance: Dataset) -> str | None:
+        membership = self._current_membership(instance)
+        return membership.acquisition if membership else None
+
+    @staticmethod
+    def get_versions(instance: Dataset) -> list[dict[str, object]]:
+        versions = getattr(instance, "available_versions", None)
 
         if versions is None:
             versions = instance.versions.all()
 
-        return DatasetVersionSerializer(
-            versions,
-            many=True,
-        ).data
+        return DatasetVersionSerializer(versions, many=True).data
 
     @staticmethod
     def get_source(
@@ -191,6 +217,7 @@ class DatasetImportSerializer(serializers.ModelSerializer):
     is_terminal = serializers.BooleanField(read_only=True)
     error = serializers.SerializerMethodField()
     poll_after_ms = serializers.SerializerMethodField()
+    access_granted = serializers.SerializerMethodField()
 
     class Meta:
         model = DatasetImport
@@ -211,6 +238,7 @@ class DatasetImportSerializer(serializers.ModelSerializer):
             "policy_snapshot",
             "error",
             "poll_after_ms",
+            "access_granted",
             "queued_at",
             "started_at",
             "last_attempt_at",
@@ -257,3 +285,21 @@ class DatasetImportSerializer(serializers.ModelSerializer):
             return None
 
         return settings.DATASET_IMPORT_POLL_INTERVAL_MS
+
+    def get_access_granted(
+        self,
+        instance: DatasetImport,
+    ) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if (
+            not getattr(user, "is_authenticated", False)
+            or instance.dataset_id is None
+        ):
+            return False
+
+        return DatasetMembership.objects.filter(
+            user=user,
+            dataset_id=instance.dataset_id,
+        ).exists()
