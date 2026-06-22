@@ -3,8 +3,6 @@ from rest_framework import viewsets
 from apps.datasets.services import DatasetService
 
 from .serializers import DatasetDetailedSerializer
-
-
 class DatasetsViewSet(viewsets.ReadOnlyModelViewSet):
     """Read-only dataset endpoint."""
 

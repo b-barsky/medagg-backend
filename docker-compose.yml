@@ -181,6 +181,8 @@ services:
         required: false
     ports:
       - "8000:8000"
+    volumes:
+      - ./src:/app  # Синхронизирует всю папку src с /app
     depends_on:
       migrate:
         condition: service_completed_successfully

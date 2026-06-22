@@ -21,3 +21,38 @@ venv.bak/
 
 # Never ignore the .gitignore!
 !.gitignore
+
+# JetBrains IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.idea_modules/
+
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# macOS
+.DS_Store
+
+# Backups
+*.backup
+*.bak
+backup_*.zip
+
+# Temporary files
+*.tmp
+*.temp
+
+# Logs
+*.log
+
+# Database files (кроме тех что нужны)
+*.db
+*.sqlite
+
+backup_*.zip
