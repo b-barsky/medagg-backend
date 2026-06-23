@@ -17,6 +17,7 @@ LICENSE_ALIASES = {
     "apache 2.0": "apache-2.0",
     "apache license 2.0": "apache-2.0",
     "apache-2.0": "apache-2.0",
+    "attribution 4.0 international (cc by 4.0)": "cc-by-4.0",
     "cc by 4.0": "cc-by-4.0",
     "cc-by-4.0": "cc-by-4.0",
     "creative commons attribution 4.0": "cc-by-4.0",
