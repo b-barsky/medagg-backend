@@ -304,18 +304,6 @@ def docker_build_handler(
             )
         )
 
-        logger.info("initializing object storage...")
-        run_cmd(
-            (
-                *compose,
-                "run",
-                "--rm",
-                "--build",
-                "--no-deps",
-                "object-storage-init"
-            )
-        )
-
         logger.info("running backend migrations...")
         run_cmd(
             (
@@ -328,6 +316,28 @@ def docker_build_handler(
             )
         )
 
+        logger.info("running pre-init services...")
+        run_cmd(
+            (
+                *compose,
+                "run",
+                "--rm",
+                "--build",
+                "--no-deps",
+                "object-storage-init"
+            )
+        )
+        run_cmd(
+            (
+                *compose,
+                "run",
+                "--rm",
+                "--build",
+                "--no-deps",
+                "builder-model-init"
+            )
+        )
+
         logger.info("starting celery workers...")
         run_cmd(
             (
@@ -337,7 +347,21 @@ def docker_build_handler(
                 "--build",
                 "--wait",
                 "celery-worker",
-                "celery-import-worker"
+                "celery-import-worker",
+                "celery-analysis-worker",
+                "celery-builder-worker"
+            )
+        )
+
+        logger.info("running post-init services...")
+        run_cmd(
+            (
+                *compose,
+                "run",
+                "--rm",
+                "--build",
+                "--no-deps",
+                "builder-analysis-init"
             )
         )
 

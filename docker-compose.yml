@@ -145,10 +145,7 @@ services:
       context: .
       target: prod
       dockerfile: Dockerfile
-    command:
-      - python
-      - manage.py
-      - ensure_object_storage
+    command: ["python", "manage.py", "ensure_object_storage"]
     environment:
       DB_HOST: db
     env_file:
@@ -163,6 +160,29 @@ services:
         condition: service_completed_successfully
       minio:
         condition: service_healthy
+        restart: true
+    networks:
+      - backend
+    restart: "no"
+
+  builder-model-init:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command: ["python", "manage.py", "train_builder_models"]
+    environment:
+      DB_HOST: db
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+      - path: ./.env/storage.env
+        required: false
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
         restart: true
     networks:
       - backend
@@ -261,6 +281,131 @@ services:
       retries: 5
       start_period: 20s
 
+  celery-analysis-worker:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command:
+      - bash
+      - -ec
+      - |
+        analysis_queue="$${BUILDER_ANALYSIS_QUEUE:-dataset-analysis}"
+        exec celery -A config worker \
+          --loglevel=INFO \
+          --concurrency="$${BUILDER_ANALYSIS_WORKER_CONCURRENCY:-1}" \
+          --max-tasks-per-child=10 \
+          --hostname="dataset-analysis@%h" \
+          --include=apps.builder.tasks \
+          --queues="$$analysis_queue"
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+      - path: ./.env/storage.env
+        required: true
+    depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
+        restart: true
+      builder-model-init:
+        condition: service_completed_successfully
+        restart: true
+      redis:
+        condition: service_healthy
+        restart: true
+    networks:
+      - backend
+    restart: unless-stopped
+    stop_grace_period: 120s
+    healthcheck:
+      test:
+        ["CMD-SHELL", "celery -A config inspect ping -d dataset-analysis@$$HOSTNAME --timeout=5 | grep -q pong"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  celery-builder-worker:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command:
+      - bash
+      - -ec
+      - |
+        builder_queue="$${BUILDER_QUEUE:-dataset-builder}"
+        exec celery -A config worker \
+          --loglevel=INFO \
+          --concurrency="$${BUILDER_WORKER_CONCURRENCY:-1}" \
+          --max-tasks-per-child=5 \
+          --hostname="dataset-builder@%h" \
+          --include=apps.builder.tasks \
+          --queues="$$builder_queue"
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+      - path: ./.env/storage.env
+        required: true
+    depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
+        restart: true
+      builder-model-init:
+        condition: service_completed_successfully
+        restart: true
+      redis:
+        condition: service_healthy
+        restart: true
+    networks:
+      - backend
+    restart: unless-stopped
+    stop_grace_period: 180s
+    healthcheck:
+      test:
+        ["CMD-SHELL", "celery -A config inspect ping -d dataset-builder@$$HOSTNAME --timeout=5 | grep -q pong"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  builder-analysis-init:
+    build:
+      context: .
+      target: prod
+      dockerfile: Dockerfile
+    command: ["python", "manage.py", "enqueue_builder_analyses"]
+    environment:
+      DB_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+    env_file:
+      - path: ./.env/settings.env
+        required: true
+      - path: ./.env/database.env
+        required: true
+      - path: ./.env/storage.env
+        required: true
+    depends_on:
+      celery-analysis-worker:
+        condition: service_healthy
+        restart: true
+      builder-model-init:
+        condition: service_completed_successfully
+        restart: true
+    networks:
+      - backend
+    restart: "no"
+
   medagg-app:
     build:
       context: .
@@ -294,8 +439,13 @@ services:
     depends_on:
       object-storage-init:
         condition: service_completed_successfully
-      migrate:
+        restart: true
+      builder-model-init:
         condition: service_completed_successfully
+        restart: true
+      builder-analysis-init:
+        condition: service_completed_successfully
+        restart: true
       redis:
         condition: service_healthy
         restart: true
@@ -303,6 +453,12 @@ services:
         condition: service_healthy
         restart: true
       celery-import-worker:
+        condition: service_healthy
+        restart: true
+      celery-analysis-worker:
+        condition: service_healthy
+        restart: true
+      celery-builder-worker:
         condition: service_healthy
         restart: true
       db:
